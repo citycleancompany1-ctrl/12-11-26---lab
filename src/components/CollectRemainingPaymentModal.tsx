@@ -32,7 +32,7 @@ export const CollectRemainingPaymentModal: React.FC<CollectRemainingPaymentModal
 
   const [collectAmount, setCollectAmount] = useState<number>(currentDue);
   const [paymentMode, setPaymentMode] = useState<'Cash' | 'UPI' | 'Card'>('UPI');
-  const [utrNumber, setUtrNumber] = useState('');
+  const [utrNumber, setUtrNumber] = useState(entry.upiTransactionRef || '');
   const [receiptNote, setReceiptNote] = useState('');
 
   const remainingAfterCollection = Math.max(0, currentDue - collectAmount);
@@ -57,6 +57,8 @@ export const CollectRemainingPaymentModal: React.FC<CollectRemainingPaymentModal
     const newPaidAmount = (entry.paidAmount || 0) + collectAmount;
     const newDueAmount = Math.max(0, currentDue - collectAmount);
     const newStatus: ReceptionPatientEntry['paymentStatus'] = newDueAmount === 0 ? 'Full Payment' : 'Partial';
+    const isClearingFull = newDueAmount === 0;
+    const nowTime = `Today, ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
 
     const updatedEntry: ReceptionPatientEntry = {
       ...entry,
@@ -67,6 +69,10 @@ export const CollectRemainingPaymentModal: React.FC<CollectRemainingPaymentModal
       balancePaymentMode: paymentMode,
       balancePaidAt: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
       upiTransactionRef: utrNumber.trim() || entry.upiTransactionRef,
+      paymentVerificationStatus: isClearingFull ? 'Verified' : entry.paymentVerificationStatus,
+      paymentVerifiedAt: isClearingFull ? nowTime : entry.paymentVerifiedAt,
+      paymentVerifiedBy: isClearingFull ? 'Reception Desk' : entry.paymentVerifiedBy,
+      isReportPublished: isClearingFull ? true : entry.isReportPublished,
     };
 
     if (onCollectPayment) {
@@ -172,6 +178,17 @@ export const CollectRemainingPaymentModal: React.FC<CollectRemainingPaymentModal
               <span className="font-extrabold">Current Balance Due:</span>
               <span className="text-base font-black text-rose-700">₹{currentDue}</span>
             </div>
+            {entry.upiTransactionRef && (
+              <div className="bg-amber-50 border border-amber-300 p-2.5 rounded-lg text-amber-950 mt-1 flex items-center justify-between">
+                <div>
+                  <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Online QR Payment UTR Submitted</div>
+                  <div className="font-mono font-black text-xs text-amber-950">UTR: {entry.upiTransactionRef}</div>
+                </div>
+                <span className="px-2 py-0.5 rounded-full bg-amber-200 text-amber-900 text-[10px] font-black border border-amber-300">
+                  {entry.paymentVerificationStatus === 'Verified' ? '✓ Verified' : '⏳ Pending Review'}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Collection Amount */}

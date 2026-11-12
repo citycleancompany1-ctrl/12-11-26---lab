@@ -5052,14 +5052,21 @@ export const CmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       syncReceptionEntryToCloud(syncedEntry);
     }
 
-    if (targetReportId && (updates.dueAmount !== undefined || updates.paymentStatus !== undefined)) {
+    if (targetReportId && (updates.dueAmount !== undefined || updates.paymentStatus !== undefined || updates.paymentVerificationStatus !== undefined || updates.upiTransactionRef !== undefined || updates.paidAmount !== undefined || updates.isReportPublished !== undefined)) {
       setAllReports((prev) =>
         prev.map((r) => {
           if (r.reportId === targetReportId) {
             const merged = {
               ...r,
               dueAmount: updates.dueAmount !== undefined ? updates.dueAmount : r.dueAmount,
+              paidAmount: updates.paidAmount !== undefined ? updates.paidAmount : r.paidAmount,
               paymentStatus: updates.paymentStatus || r.paymentStatus,
+              paymentVerificationStatus: updates.paymentVerificationStatus !== undefined ? updates.paymentVerificationStatus : r.paymentVerificationStatus,
+              upiTransactionRef: updates.upiTransactionRef !== undefined ? updates.upiTransactionRef : r.upiTransactionRef,
+              paymentVerificationSubmittedAt: updates.paymentVerificationSubmittedAt !== undefined ? updates.paymentVerificationSubmittedAt : r.paymentVerificationSubmittedAt,
+              paymentVerifiedAt: updates.paymentVerifiedAt !== undefined ? updates.paymentVerifiedAt : r.paymentVerifiedAt,
+              paymentVerifiedBy: updates.paymentVerifiedBy !== undefined ? updates.paymentVerifiedBy : r.paymentVerifiedBy,
+              isPublished: updates.isReportPublished !== undefined ? updates.isReportPublished : r.isPublished,
             };
             syncedReport = merged;
             return merged;

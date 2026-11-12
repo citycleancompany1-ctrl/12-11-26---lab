@@ -176,6 +176,8 @@ export const PatientPortalApp: React.FC<PatientPortalAppProps> = ({
   const [showPayOnlineModal, setShowPayOnlineModal] = useState(false);
   const [payingMode, setPayingMode] = useState<'UPI' | 'Card'>('UPI');
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
+  const [patientEnteredUtr, setPatientEnteredUtr] = useState('');
+  const [utrError, setUtrError] = useState<string | null>(null);
 
   // Pending Sample Status (for samples in lab registered at reception but report not finalized yet)
   const [pendingSampleStatus, setPendingSampleStatus] = useState<{
@@ -198,8 +200,29 @@ export const PatientPortalApp: React.FC<PatientPortalAppProps> = ({
   const [showVerifyModal, setShowVerifyModal] = useState(false);
   const [matchedList, setMatchedList] = useState<Array<{ type: 'report' | 'entry'; report?: LabReport; entry?: ReceptionPatientEntry }>>([]);
 
-  // 100% Payment Clearance Verification: Patient can ONLY view report if payment is 100% complete
+  // Check if online UTR verification is pending approval by Lab Owner or Receptionist
+  const isVerificationPending = React.useMemo(() => {
+    if (matchedEntry?.paymentVerificationStatus === 'Pending Verification') return true;
+    if (searchedReport?.paymentVerificationStatus === 'Pending Verification') return true;
+    const hasUtr = Boolean(matchedEntry?.upiTransactionRef || searchedReport?.upiTransactionRef);
+    const isExplicitlyVerified =
+      matchedEntry?.paymentVerificationStatus === 'Verified' ||
+      searchedReport?.paymentVerificationStatus === 'Verified';
+    if (hasUtr && !isExplicitlyVerified) {
+      const isFull = matchedEntry?.paymentStatus === 'Full Payment' || searchedReport?.paymentStatus === 'Full Payment';
+      const hasDue = Number(matchedEntry?.dueAmount ?? searchedReport?.dueAmount ?? 0) > 0;
+      if (!isFull || hasDue) return true;
+    }
+    return false;
+  }, [matchedEntry, searchedReport]);
+
+  const currentSubmittedUtr = matchedEntry?.upiTransactionRef || searchedReport?.upiTransactionRef || '';
+
+  // 100% Payment Clearance Verification: Patient can ONLY view report if payment is 100% complete AND verified
   const isPayment100PercentComplete = React.useMemo(() => {
+    // If verification is pending, report must remain locked!
+    if (isVerificationPending) return false;
+
     // 1. Check matched reception entry if present
     if (matchedEntry) {
       const due = Number(matchedEntry.dueAmount ?? 0);
@@ -229,9 +252,14 @@ export const PatientPortalApp: React.FC<PatientPortalAppProps> = ({
     }
 
     return true;
-  }, [matchedEntry, searchedReport]);
+  }, [matchedEntry, searchedReport, isVerificationPending]);
 
-  const isPaymentPending = !isPayment100PercentComplete;
+  const isPaymentPending = !isPayment100PercentComplete || isVerificationPending;
+
+  const currentVerificationStatus: 'Pending Verification' | 'Verified' | 'Pay on Spot / Unpaid' =
+    isVerificationPending
+      ? 'Pending Verification'
+      : (matchedEntry?.paymentVerificationStatus || searchedReport?.paymentVerificationStatus || (isPaymentPending ? 'Pay on Spot / Unpaid' : 'Verified'));
 
   // Calculate active due amount
   const activeDueAmount = React.useMemo(() => {
@@ -965,33 +993,36 @@ export const PatientPortalApp: React.FC<PatientPortalAppProps> = ({
   const [downloadSuccessToast, setDownloadSuccessToast] = useState<string | null>(null);
   const [printIframeNotice, setPrintIframeNotice] = useState(false);
 
-  // Online Payment Clearance Handler (Simulates immediate clearance & unlocks report)
+  // Online Payment UTR Submission Handler
+  // Submits UTR for Lab Owner / Receptionist verification; Strictly keeps report locked until authorized staff approves
   const handlePayDueOnline = () => {
+    const cleanUtr = patientEnteredUtr.trim().replace(/[^a-zA-Z0-9]/g, '');
+    if (!cleanUtr || cleanUtr.length < 6) {
+      setUtrError('Please enter a valid 12-digit UPI Reference / UTR Number from Google Pay, PhonePe, Paytm, or BHIM');
+      return;
+    }
+
+    setUtrError(null);
     setIsProcessingPayment(true);
+    const submissionTime = `Today, ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
+
     setTimeout(() => {
       if (matchedEntry) {
-        const updatedPaid = (matchedEntry.paidAmount || 0) + activeDueAmount;
         updateReceptionEntry(matchedEntry.id, {
-          paidAmount: updatedPaid,
-          dueAmount: 0,
-          paymentStatus: 'Full Payment',
+          upiTransactionRef: cleanUtr,
+          paymentVerificationStatus: 'Pending Verification',
           paymentMode: payingMode,
-          isReportPublished: true,
-          publishedAt: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-          publishedBy: 'Online Portal Gateway',
-          balancePaidAmount: (matchedEntry.balancePaidAmount || 0) + activeDueAmount,
-          balancePaymentMode: payingMode,
-          balancePaidAt: `Today, ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`,
+          paymentVerificationSubmittedAt: submissionTime,
+          // STRICT RULE: Do NOT set dueAmount: 0 or isReportPublished: true!
         });
         setMatchedEntry((prev) =>
           prev
             ? {
                 ...prev,
-                paidAmount: updatedPaid,
-                dueAmount: 0,
-                paymentStatus: 'Full Payment',
+                upiTransactionRef: cleanUtr,
+                paymentVerificationStatus: 'Pending Verification',
                 paymentMode: payingMode,
-                isReportPublished: true,
+                paymentVerificationSubmittedAt: submissionTime,
               }
             : null
         );
@@ -1001,9 +1032,9 @@ export const PatientPortalApp: React.FC<PatientPortalAppProps> = ({
           prev
             ? {
                 ...prev,
-                dueAmount: 0,
-                paidAmount: (prev.paidAmount || 0) + activeDueAmount,
-                isReportPublished: true,
+                upiTransactionRef: cleanUtr,
+                paymentVerificationStatus: 'Pending Verification',
+                paymentVerificationSubmittedAt: submissionTime,
               }
             : null
         );
@@ -1011,10 +1042,10 @@ export const PatientPortalApp: React.FC<PatientPortalAppProps> = ({
       setIsProcessingPayment(false);
       setShowPayOnlineModal(false);
       setDownloadSuccessToast(
-        `Payment of ₹${activeDueAmount} received successfully! Your complete diagnostic report is now unlocked.`
+        `UTR ${cleanUtr} submitted! Status: "Payment Under Review". Report will unlock automatically once verified by the Lab Owner or Receptionist.`
       );
-      setTimeout(() => setDownloadSuccessToast(null), 5000);
-    }, 800);
+      setTimeout(() => setDownloadSuccessToast(null), 8000);
+    }, 600);
   };
 
   const handleDownloadPdf = async () => {
@@ -1657,25 +1688,103 @@ export const PatientPortalApp: React.FC<PatientPortalAppProps> = ({
             <div className="pt-1">
               <CanonicalPdfViewer
                 report={searchedReport}
-                isPaymentPending={false}
-                activeDueAmount={0}
-                onPayOnline={() => setShowPayOnlineModal(true)}
+                isPaymentPending={isPaymentPending}
+                activeDueAmount={activeDueAmount}
+                paymentVerificationStatus={currentVerificationStatus}
+                submittedUtr={currentSubmittedUtr}
+                onPayOnline={() => {
+                  setPatientEnteredUtr(currentSubmittedUtr);
+                  setUtrError(null);
+                  setShowPayOnlineModal(true);
+                }}
+                onReEnterUtr={() => {
+                  setPatientEnteredUtr(currentSubmittedUtr);
+                  setUtrError(null);
+                  setShowPayOnlineModal(true);
+                }}
                 title={`OFFICIAL REPORT MASTER • ${searchedReport.reportId}`}
               />
             </div>
 
             {/* ACTION BAR (Neatly positioned BELOW the report) */}
-            <div className="flex flex-wrap items-center justify-end gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm no-print">
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm no-print">
+              {isPaymentPending ? (
+                <div className="flex items-center gap-2.5 text-xs">
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                    isVerificationPending ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'
+                  }`}>
+                    <Lock className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="font-extrabold text-slate-900 flex items-center gap-1.5">
+                      <span>{isVerificationPending ? 'Payment Verification Pending' : `Report Locked • Balance Due: ₹${activeDueAmount}`}</span>
+                      {isVerificationPending && (
+                        <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-300">
+                          Under Review
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      {isVerificationPending
+                        ? `Submitted UTR: ${currentSubmittedUtr || 'Recorded'} • Awaiting Lab Owner or Receptionist verification to unlock report.`
+                        : 'Please pay remaining dues using the Lab QR code to unlock report download.'}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-xs text-emerald-800">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <div>
+                    <span className="font-bold">Payment Verified &amp; Full Clearance Confirmed</span>
+                    <div className="text-[10px] text-emerald-700">Official NABL report is unlocked for viewing and download.</div>
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-center gap-2.5 flex-wrap w-full sm:w-auto justify-end">
+                {isPaymentPending && !isVerificationPending && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPatientEnteredUtr(currentSubmittedUtr);
+                      setUtrError(null);
+                      setShowPayOnlineModal(true);
+                    }}
+                    className="bg-amber-500 hover:bg-amber-600 text-slate-950 px-4 py-2.5 rounded-xl text-xs font-black transition flex items-center gap-2 shadow-xs cursor-pointer active:scale-95"
+                  >
+                    <CreditCard className="w-4 h-4" />
+                    <span>Pay ₹{activeDueAmount} via QR</span>
+                  </button>
+                )}
+
+                {isVerificationPending && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPatientEnteredUtr(currentSubmittedUtr);
+                      setUtrError(null);
+                      setShowPayOnlineModal(true);
+                    }}
+                    className="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-3.5 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span>Update UTR</span>
+                  </button>
+                )}
+
                 {/* 1. PDF Download Button */}
                 <button
                   id="btn-download-pdf-portal"
                   onClick={handleDownloadPdf}
-                  className="bg-[#0F766E] hover:bg-[#0d655e] text-white px-5 py-2.5 rounded-xl text-xs font-black transition flex items-center gap-2 shadow-sm active:scale-95 cursor-pointer"
-                  title="Download Official NABL Medical Report PDF"
+                  disabled={isPaymentPending}
+                  className={`px-5 py-2.5 rounded-xl text-xs font-black transition flex items-center gap-2 shadow-sm ${
+                    isPaymentPending
+                      ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed shadow-none'
+                      : 'bg-[#0F766E] hover:bg-[#0d655e] text-white active:scale-95 cursor-pointer'
+                  }`}
+                  title={isPaymentPending ? (isVerificationPending ? 'Payment Verification Pending • Report Locked' : 'Payment Incomplete • Report Locked') : 'Download Official NABL Medical Report PDF'}
                 >
-                  <Download className="w-4 h-4 text-emerald-300" />
-                  <span>Download PDF</span>
+                  {isPaymentPending ? <Lock className="w-4 h-4 text-slate-400" /> : <Download className="w-4 h-4 text-emerald-300" />}
+                  <span>{isPaymentPending ? (isVerificationPending ? 'Verification Pending' : 'Report Locked') : 'Download PDF'}</span>
                 </button>
 
                 {/* 2. Share on WhatsApp Button */}
@@ -1846,8 +1955,61 @@ export const PatientPortalApp: React.FC<PatientPortalAppProps> = ({
               })()}
             </div>
 
+            {/* Step 2: Mandatory UPI UTR / Transaction Reference ID Input */}
+            <div className="bg-amber-50/70 border-2 border-amber-300/80 rounded-2xl p-4 space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <label className="block text-xs font-black text-slate-900 uppercase tracking-wide">
+                    Enter UPI Reference / UTR Number <span className="text-rose-600">*</span>
+                  </label>
+                  <p className="text-[11px] text-amber-950 font-medium leading-relaxed mt-0.5">
+                    पेमेंट करने के बाद अपने UPI ऐप (Google Pay / PhonePe / Paytm / BHIM) से 12 अंकों का <strong>UTR / UPI Ref ID</strong> यहाँ दर्ज करें:
+                  </p>
+                </div>
+                <span className="px-2 py-0.5 rounded bg-amber-200 text-amber-900 text-[10px] font-black uppercase tracking-wider shrink-0 border border-amber-300">
+                  Required
+                </span>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="relative">
+                  <input
+                    type="text"
+                    maxLength={18}
+                    value={patientEnteredUtr}
+                    onChange={(e) => {
+                      setPatientEnteredUtr(e.target.value.replace(/[^a-zA-Z0-9]/g, ''));
+                      if (utrError) setUtrError(null);
+                    }}
+                    placeholder="e.g. 526371829102"
+                    className={`w-full px-3.5 py-2.5 rounded-xl border font-mono font-black text-sm tracking-widest text-slate-900 placeholder:text-slate-400 placeholder:font-normal placeholder:tracking-normal focus:outline-none transition ${
+                      utrError
+                        ? 'border-rose-400 bg-rose-50/50 ring-2 ring-rose-200'
+                        : 'border-slate-300 bg-white focus:border-amber-500 focus:ring-2 focus:ring-amber-200'
+                    }`}
+                  />
+                  {patientEnteredUtr && (
+                    <span className="absolute right-3 top-2.5 text-[10px] font-mono font-bold text-slate-400">
+                      {patientEnteredUtr.length} digits
+                    </span>
+                  )}
+                </div>
+
+                {utrError && (
+                  <p className="text-[11px] font-bold text-rose-600 flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{utrError}</span>
+                  </p>
+                )}
+
+                <div className="text-[10px] text-slate-600 bg-white/80 p-2 rounded-lg border border-amber-200/60 leading-tight">
+                  💡 <strong>Security Note:</strong> Lab Owner / Receptionist will verify this UTR before unlocking report.
+                </div>
+              </div>
+            </div>
+
             {/* Pay Action Buttons */}
-            <div className="pt-2 flex items-center gap-2.5">
+            <div className="pt-1 flex items-center gap-2.5">
               <button
                 type="button"
                 onClick={() => setShowPayOnlineModal(false)}
@@ -1857,19 +2019,19 @@ export const PatientPortalApp: React.FC<PatientPortalAppProps> = ({
               </button>
               <button
                 type="button"
-                disabled={isProcessingPayment}
+                disabled={isProcessingPayment || !patientEnteredUtr.trim()}
                 onClick={handlePayDueOnline}
-                className="flex-2 py-2.5 rounded-xl bg-[#0F766E] hover:bg-[#0d655e] text-white text-xs font-black transition shadow-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                className="flex-2 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black transition shadow-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
               >
                 {isProcessingPayment ? (
                   <>
                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Authorizing Payment...</span>
+                    <span>Submitting UTR for Review...</span>
                   </>
                 ) : (
                   <>
-                    <Check className="w-4 h-4" />
-                    <span>Pay ₹{activeDueAmount} & Unlock Report</span>
+                    <Check className="w-4 h-4 text-slate-950" />
+                    <span>Submit UTR for Verification</span>
                   </>
                 )}
               </button>

@@ -2549,8 +2549,8 @@ export const ReceptionEntryDashboard: React.FC<ReceptionEntryDashboardProps> = (
                             ) : entry.paymentVerificationStatus === 'Pending Verification' || (entry.upiTransactionRef && entry.paymentVerificationStatus !== 'Verified') ? (
                               <>
                                 <span className="text-slate-200">·</span>
-                                <span className="text-amber-800 bg-amber-50 border border-amber-200 text-[10px] font-medium px-1.5 py-0.5 rounded">
-                                  Pending UPI Verify
+                                <span className="text-amber-800 bg-amber-50 border border-amber-300 text-[10px] font-black px-1.5 py-0.5 rounded flex items-center gap-1 font-mono">
+                                  <span>⏳ UTR: {entry.upiTransactionRef || 'Pending'}</span>
                                 </span>
                               </>
                             ) : null}
@@ -2558,24 +2558,32 @@ export const ReceptionEntryDashboard: React.FC<ReceptionEntryDashboardProps> = (
 
                           {/* Right: Actions — Verify UPI | Edit | Update Payment | Delete | Print */}
                           <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-                            {/* 0. Verify Manual UPI (If pending verification) */}
+                            {/* 0. Verify Online QR / Manual UPI (If pending verification) */}
                             {(entry.paymentVerificationStatus === 'Pending Verification' || (entry.upiTransactionRef && entry.paymentVerificationStatus !== 'Verified')) && (
                               <button
                                 type="button"
                                 onClick={() => {
+                                  const confirmed = window.confirm(
+                                    `Verify & Approve Online Payment?\n\nPatient: ${entry.patientName} (Token ${entry.tokenNumber})\nSubmitted UTR: ${entry.upiTransactionRef || 'N/A'}\nNet Payable: ₹${entry.totalAmount}\n\nClick OK once you have confirmed receipt of funds in the lab bank account/soundbox. This will immediately unlock the patient's report for download.`
+                                  );
+                                  if (!confirmed) return;
+                                  const verifyTime = `Today, ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
                                   updateReceptionEntry(entry.id, {
                                     paymentVerificationStatus: 'Verified',
                                     paymentStatus: 'Full Payment',
                                     paidAmount: entry.totalAmount,
                                     dueAmount: 0,
+                                    isReportPublished: true,
+                                    paymentVerifiedBy: 'Receptionist',
+                                    paymentVerifiedAt: verifyTime,
                                   });
-                                  showToast(`✅ Manual UPI verified & approved for ${entry.patientName} (Token ${entry.tokenNumber})!`);
+                                  showToast(`✅ UTR ${entry.upiTransactionRef || ''} verified! Report unlocked for ${entry.patientName} (Token ${entry.tokenNumber}).`);
                                 }}
-                                className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-[10px] font-semibold transition cursor-pointer flex items-center gap-1"
-                                title="Verify manual UPI"
+                                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-[10px] font-black transition cursor-pointer flex items-center gap-1 shadow-2xs"
+                                title={`Verify UTR ${entry.upiTransactionRef || ''} & unlock report`}
                               >
                                 <Check className="w-3 h-3 text-white" />
-                                <span>Verify</span>
+                                <span>Verify UTR</span>
                               </button>
                             )}
 

@@ -130,14 +130,18 @@ export const VendorBillingTab: React.FC = () => {
 
   // Vendor Manual UPI Payment Verification Helper
   const handleVerifyManualUpi = (entry: ReceptionPatientEntry) => {
+    const verifiedTime = `Today, ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
     updateReceptionEntry(entry.id, {
       paymentVerificationStatus: 'Verified',
       paymentStatus: 'Full Payment',
       paidAmount: entry.totalAmount,
       dueAmount: 0,
-      notes: `${entry.notes ? entry.notes + ' • ' : ''}Payment verified manually by Vendor on ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`,
+      isReportPublished: true,
+      paymentVerifiedBy: 'Lab Owner',
+      paymentVerifiedAt: verifiedTime,
+      notes: `${entry.notes ? entry.notes + ' • ' : ''}Payment verified & approved by Lab Owner on ${verifiedTime}`,
     });
-    showNotification(`✅ Manual UPI Payment Verified & Approved for ${entry.patientName} (UTR: ${entry.upiTransactionRef || 'Verified'})!`);
+    showNotification(`✅ UTR ${entry.upiTransactionRef || 'Online'} Verified & Report Unlocked for ${entry.patientName}!`);
   };
 
   // Handle File Upload 1

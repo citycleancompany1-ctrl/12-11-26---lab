@@ -16,6 +16,7 @@ import {
   X,
   MessageSquare,
   Share2,
+  Clock,
 } from 'lucide-react';
 import { LabReport, ReportItem } from '../types';
 import { determineParameterStatus, EvaluatedParameterResult } from '../utils/statusLogic';
@@ -33,7 +34,11 @@ interface CanonicalPdfViewerProps {
   report: LabReport;
   isPaymentPending?: boolean;
   activeDueAmount?: number;
+  paymentVerificationStatus?: 'Pending Verification' | 'Verified' | 'Pay on Spot / Unpaid';
+  submittedUtr?: string;
+  submittedUtrAt?: string;
   onPayOnline?: () => void;
+  onReEnterUtr?: () => void;
   onClose?: () => void;
   className?: string;
   autoRenderNativeEmbed?: boolean;
@@ -44,7 +49,11 @@ export const CanonicalPdfViewer: React.FC<CanonicalPdfViewerProps> = ({
   report,
   isPaymentPending,
   activeDueAmount,
+  paymentVerificationStatus,
+  submittedUtr,
+  submittedUtrAt,
   onPayOnline,
+  onReEnterUtr,
   onClose,
   className = '',
   title = 'CANONICAL DIAGNOSTIC REPORT',
@@ -60,9 +69,22 @@ export const CanonicalPdfViewer: React.FC<CanonicalPdfViewerProps> = ({
   const [isDownloading, setIsDownloading] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
 
-  // Payment status calculation: payment must be 100% complete to view report
+  // Check if payment is pending verification (UTR submitted, awaiting Lab Owner / Reception approval)
+  const isVerificationPending = useMemo(() => {
+    if (paymentVerificationStatus === 'Pending Verification') return true;
+    if (report.paymentVerificationStatus === 'Pending Verification') return true;
+    const effectiveUtr = submittedUtr || report.upiTransactionRef;
+    const isExplicitlyVerified = paymentVerificationStatus === 'Verified' || report.paymentVerificationStatus === 'Verified';
+    if (effectiveUtr && !isExplicitlyVerified && (report.paymentStatus !== 'Full Payment' || (report.dueAmount !== undefined && report.dueAmount > 0))) {
+      return true;
+    }
+    return false;
+  }, [paymentVerificationStatus, report, submittedUtr]);
+
+  // Payment status calculation: payment must be 100% complete AND verified to view report
   const isDuePaymentPending = useMemo(() => {
     if (isPaymentPending !== undefined) return isPaymentPending;
+    if (isVerificationPending) return true;
     const due = Number(report.dueAmount ?? 0);
     const paid = Number(report.paidAmount ?? 0);
     const total = Number(report.totalAmount ?? (report as any).totalCharge ?? 0);
@@ -74,7 +96,7 @@ export const CanonicalPdfViewer: React.FC<CanonicalPdfViewerProps> = ({
     if (status === 'full payment' || status === 'paid' || status === 'completed') return false;
     if (due <= 0 && (!status || status !== 'pending')) return false;
     return true;
-  }, [isPaymentPending, report]);
+  }, [isPaymentPending, isVerificationPending, report]);
 
   const effectiveDueAmount =
     activeDueAmount !== undefined
@@ -82,6 +104,8 @@ export const CanonicalPdfViewer: React.FC<CanonicalPdfViewerProps> = ({
       : report.dueAmount !== undefined
       ? report.dueAmount
       : 0;
+
+  const currentUtr = submittedUtr || report.upiTransactionRef || '';
 
   // Resolve dynamic lab & letterhead settings matching pdfGenerator exactly
   const resolved = useMemo(() => resolveLabDetails(report), [report]);
@@ -341,6 +365,138 @@ export const CanonicalPdfViewer: React.FC<CanonicalPdfViewerProps> = ({
     window.open(waUrl, '_blank', 'noopener,noreferrer');
   };
 
+  // Reusable Lock Overlay for both Rendered PDF Pages and HTML Fallback
+  const renderLockOverlay = () => {
+    if (!isDuePaymentPending) return null;
+
+    if (isVerificationPending) {
+      return (
+        <div
+          className="absolute inset-0 bg-slate-950/95 backdrop-blur-2xl flex flex-col items-center justify-center p-4 sm:p-6 text-center z-30 select-none animate-in fade-in duration-200"
+          style={{ backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)' }}
+        >
+          <div className="max-w-md w-full mx-auto bg-slate-900 text-white rounded-2xl p-6 shadow-2xl border border-amber-400/50 flex flex-col items-center space-y-4 animate-in zoom-in-95 duration-200">
+            <div className="relative">
+              <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border-2 border-amber-400/80 flex items-center justify-center text-amber-400 shadow-inner">
+                <Clock className="w-8 h-8 animate-pulse" />
+              </div>
+              <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-amber-500 border-2 border-slate-900 flex items-center justify-center text-slate-950 font-black text-[10px]">
+                ⏳
+              </div>
+            </div>
+
+            <div className="space-y-2 text-center w-full">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-400/20 text-amber-300 text-[11px] font-black border border-amber-400/40 tracking-wide uppercase">
+                <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <span>Payment Verification Pending</span>
+              </div>
+              <h4 className="text-base sm:text-lg font-black text-white">
+                Payment Under Review
+              </h4>
+              <p className="text-xs text-amber-200/90 leading-relaxed max-w-sm mx-auto">
+                आपका ऑनलाइन पेमेंट रेफरेंस दर्ज हो चुका है। लैब ओनर या रिसेप्शनिस्ट द्वारा UTR कन्फर्म होते ही रिपोर्ट और डाउनलोड अपने आप अनलॉक हो जाएंगे।
+              </p>
+            </div>
+
+            {/* UTR Reference Details Card */}
+            <div className="w-full bg-slate-950/80 border border-slate-800 rounded-xl p-3 text-xs space-y-2 text-left">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400 font-medium">Submitted UTR / Ref:</span>
+                <span className="font-mono font-black text-amber-300 text-xs tracking-wider bg-amber-950/40 px-2 py-0.5 rounded border border-amber-800/50">
+                  {currentUtr || 'Pending Submission'}
+                </span>
+              </div>
+              {effectiveDueAmount > 0 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400 font-medium">Payable Amount:</span>
+                  <span className="font-mono font-bold text-emerald-400 text-xs">
+                    ₹{effectiveDueAmount}
+                  </span>
+                </div>
+              )}
+              {submittedUtrAt && (
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-slate-400">Submitted At:</span>
+                  <span className="text-slate-300 font-medium">{submittedUtrAt}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between text-[11px] pt-1 border-t border-slate-800/60">
+                <span className="text-slate-500">Access Status:</span>
+                <span className="text-amber-400 font-bold flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                  Locked • Awaiting Staff Approval
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 w-full pt-1">
+              {onReEnterUtr && (
+                <button
+                  type="button"
+                  onClick={onReEnterUtr}
+                  className="flex-1 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition border border-slate-700 cursor-pointer"
+                >
+                  Edit / Update UTR
+                </button>
+              )}
+              {onPayOnline && (
+                <button
+                  type="button"
+                  onClick={onPayOnline}
+                  className="flex-1 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black transition cursor-pointer shadow-md"
+                >
+                  View Lab QR
+                </button>
+              )}
+            </div>
+
+            <div className="text-[10px] text-slate-400 flex items-center justify-center gap-1">
+              <Lock className="w-3 h-3 text-amber-400/80" />
+              <span>Strict Rule: Report unlocks only after authorized verification</span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div
+        className="absolute inset-0 bg-slate-950/96 backdrop-blur-2xl flex flex-col items-center justify-center p-4 sm:p-6 text-center z-30 select-none animate-in fade-in duration-200"
+        style={{ backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)' }}
+      >
+        <div className="max-w-md w-full mx-auto bg-slate-900 text-white rounded-2xl p-6 shadow-2xl border border-amber-400/40 flex flex-col items-center space-y-3.5 animate-in zoom-in-95 duration-200">
+          <div className="w-14 h-14 rounded-2xl bg-amber-500/20 border-2 border-amber-400/60 flex items-center justify-center text-amber-400 shadow-inner">
+            <Lock className="w-7 h-7" />
+          </div>
+
+          <div className="space-y-1.5 text-center">
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-400/15 text-amber-300 text-[11px] font-bold border border-amber-400/30">
+              <AlertCircle className="w-3.5 h-3.5" />
+              <span>Report Locked (Payment Incomplete)</span>
+            </div>
+            <h4 className="text-base sm:text-lg font-black text-white">
+              Due Amount: <span className="text-amber-400 font-mono">₹{effectiveDueAmount}</span>
+            </h4>
+            <p className="text-xs text-slate-300 leading-relaxed max-w-xs mx-auto">
+              बकाया राशि का भुगतान लैब QR कोड से करें और UTR सबमिट करें। वेरिफिकेशन के बाद रिपोर्ट तुरंत अनलॉक हो जाएगी।
+            </p>
+          </div>
+
+          {onPayOnline && effectiveDueAmount > 0 && (
+            <button
+              type="button"
+              onClick={onPayOnline}
+              className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs transition shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+            >
+              <CreditCard className="w-4 h-4 text-slate-950" />
+              <span>Pay ₹{effectiveDueAmount} via QR &amp; Submit UTR</span>
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className={`bg-slate-950 text-slate-100 rounded-2xl border border-slate-800 shadow-2xl overflow-hidden flex flex-col w-full ${className}`}>
       {/* Top Bar for View Mode Controls */}
@@ -506,42 +662,7 @@ export const CanonicalPdfViewer: React.FC<CanonicalPdfViewerProps> = ({
                 </div>
 
                 {/* Secure Payment Pending Lock Overlay */}
-                {isDuePaymentPending && (
-                  <div
-                    className="absolute inset-x-0 top-0 bottom-0 bg-slate-950/96 backdrop-blur-2xl flex flex-col items-center justify-center p-4 sm:p-6 text-center z-20 select-none"
-                    style={{ backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)' }}
-                  >
-                    <div className="max-w-md mx-auto bg-slate-900 text-white rounded-2xl p-6 shadow-2xl border border-amber-400/40 flex flex-col items-center space-y-3.5 animate-in zoom-in-95 duration-200">
-                      <div className="w-14 h-14 rounded-2xl bg-amber-500/20 border-2 border-amber-400/60 flex items-center justify-center text-amber-400 shadow-inner">
-                        <Lock className="w-7 h-7" />
-                      </div>
-
-                      <div className="space-y-1.5">
-                        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-400/15 text-amber-300 text-[11px] font-bold border border-amber-400/30">
-                          <AlertCircle className="w-3.5 h-3.5" />
-                          <span>Report Locked (Payment Incomplete)</span>
-                        </div>
-                        <h4 className="text-base sm:text-lg font-black text-white">
-                          Due Amount: <span className="text-amber-400 font-mono">₹{effectiveDueAmount}</span>
-                        </h4>
-                        <p className="text-xs text-slate-300 leading-relaxed max-w-xs mx-auto">
-                          बकाया राशि क्लियर होने तक रिपोर्ट परिणाम लॉक रहेंगे। पेमेंट 100% पूरा होते ही पूरी रिपोर्ट और डाउनलोड अनलॉक हो जाएंगे।
-                        </p>
-                      </div>
-
-                      {onPayOnline && effectiveDueAmount > 0 && (
-                        <button
-                          type="button"
-                          onClick={onPayOnline}
-                          className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs transition shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-95"
-                        >
-                          <CreditCard className="w-4 h-4 text-slate-950" />
-                          <span>Pay ₹{effectiveDueAmount} &amp; Unlock Report</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                )}
+                {isDuePaymentPending && renderLockOverlay()}
               </div>
             ))}
           </div>
@@ -723,7 +844,9 @@ export const CanonicalPdfViewer: React.FC<CanonicalPdfViewerProps> = ({
               </div>
 
               {/* DEPARTMENT HEADERS & INVESTIGATION TABLE */}
-              <div className="space-y-6">
+              <div className="space-y-6 relative">
+                {isDuePaymentPending && renderLockOverlay()}
+                <div className={`space-y-6 ${isDuePaymentPending ? 'filter blur-md select-none pointer-events-none' : ''}`}>
                 {departmentGroups.map((group, groupIdx) => (
                   <div key={groupIdx} className="space-y-2">
                     {showDeptHeader && (
@@ -827,6 +950,7 @@ export const CanonicalPdfViewer: React.FC<CanonicalPdfViewerProps> = ({
                     </div>
                   </div>
                 ))}
+                </div>
               </div>
 
               {/* CLINIC NOTE */}

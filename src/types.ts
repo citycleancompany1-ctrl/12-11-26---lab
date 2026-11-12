@@ -698,6 +698,11 @@ export interface LabReport {
   publishedBy?: string;
   paymentStatus?: string;
   dueAmount?: number;
+  paymentVerificationStatus?: 'Pending Verification' | 'Verified' | 'Pay on Spot / Unpaid';
+  upiTransactionRef?: string;
+  paymentVerificationSubmittedAt?: string;
+  paymentVerifiedAt?: string;
+  paymentVerifiedBy?: string;
   sentToReceptionDesk?: boolean;
   sentToReceptionAt?: string;
   enableStaticPdfLetterhead?: boolean;
@@ -878,6 +883,9 @@ export interface ReceptionPatientEntry {
   paymentGatewayTxnId?: string;
   autoVerified?: boolean;
   paymentVerificationStatus?: 'Pending Verification' | 'Verified' | 'Pay on Spot / Unpaid';
+  paymentVerificationSubmittedAt?: string;
+  paymentVerifiedAt?: string;
+  paymentVerifiedBy?: string;
   homeCollectionCharges?: number;
   areaLocality?: string;
   city?: string;
