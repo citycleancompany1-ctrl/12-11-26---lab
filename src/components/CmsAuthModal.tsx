@@ -1,0 +1,1649 @@
+import React, { useState, useEffect } from 'react';
+import {
+  X,
+  Building,
+  Building2,
+  FlaskConical,
+  Lock,
+  Mail,
+  ArrowRight,
+  CheckCircle2,
+  KeyRound,
+  Receipt,
+  Phone,
+  Hash,
+  Crown,
+  AlertCircle,
+  Sparkles,
+  MapPin,
+  ShieldCheck,
+  User,
+  Eye,
+  EyeOff,
+  MessageSquare,
+  ExternalLink,
+  Globe,
+  Copy,
+  Check,
+  RotateCw,
+  FileText,
+  Clock,
+} from 'lucide-react';
+import { useCms } from '../context/CmsContext';
+import { AppView } from '../types';
+import { getPermissionsForRole } from '../utils/rbac';
+
+interface CmsAuthModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onNavigateView: (view: AppView) => void;
+  isVendorContext?: boolean;
+}
+
+export type MainAuthRole = 'super_admin' | 'vendor_owner';
+export type LabAuthRole = 'auto' | 'vendor' | 'reception' | 'technician' | 'expert';
+
+export const INDIAN_STATES = [
+  'Punjab',
+  'Haryana',
+  'Delhi NCR',
+  'Uttar Pradesh',
+  'Rajasthan',
+  'Himachal Pradesh',
+  'Chandigarh',
+  'Jammu & Kashmir',
+  'Uttarakhand',
+  'Maharashtra',
+  'Gujarat',
+  'Madhya Pradesh',
+  'Bihar',
+  'West Bengal',
+  'Karnataka',
+  'Tamil Nadu',
+  'Andhra Pradesh',
+  'Telangana',
+  'Kerala',
+  'Odisha',
+  'Assam',
+  'Jharkhand',
+  'Chhattisgarh',
+  'Goa',
+  'Tripura',
+  'Meghalaya',
+  'Manipur',
+  'Nagaland',
+  'Puducherry',
+];
+
+export const REGISTRATION_PACKAGES = [
+  {
+    id: 'free-demo',
+    name: 'Free Demo Plan',
+    priceINR: 0,
+    duration: '1 Day',
+    badge: 'Free Demo (₹0)',
+    badgeColor: 'bg-emerald-100 text-emerald-900 border-emerald-300',
+    description: 'Full software access for 1 day',
+  },
+  {
+    id: '1-month',
+    name: '1 Month',
+    priceINR: 1499,
+    duration: '30 Days',
+    badge: 'Starter & Flexible',
+    badgeColor: 'bg-blue-100 text-[#123B6D] border-blue-200',
+    description: 'Full software access for 1 month',
+  },
+  {
+    id: '3-months',
+    name: '3 Months',
+    priceINR: 3999,
+    duration: '90 Days',
+    badge: 'Most Popular Choice',
+    badgeColor: 'bg-amber-100 text-amber-900 border-amber-300',
+    description: 'Full software access for 3 months',
+  },
+  {
+    id: '1-year',
+    name: '1 Year',
+    priceINR: 11999,
+    duration: '365 Days',
+    badge: 'Best Value',
+    badgeColor: 'bg-indigo-100 text-indigo-900 border-indigo-200',
+    description: 'Full software access for 1 year',
+  },
+];
+
+export const CmsAuthModal: React.FC<CmsAuthModalProps> = ({
+  isOpen,
+  onClose,
+  onNavigateView,
+  isVendorContext = false,
+}) => {
+  const {
+    login,
+    targetLoginRole,
+    currentUser,
+    logout,
+    vendorLabsList,
+    vendorLabSettings,
+    selectedVendorLabId,
+    vendorBranches,
+    allStaffAccounts,
+    authModalTab,
+    setAuthModalTab,
+    registerNewLab,
+    selectVendorLab,
+    selectedRegistrationPackage,
+    setSelectedRegistrationPackage,
+  } = useCms();
+
+  const [activeTab, setActiveTab] = useState<'login' | 'register'>('login');
+
+  // Role selections
+  // For Lab Website: Auto-Detect (Unified), Lab Admin, Receptionist, Technician, Expert Member
+  const [labRole, setLabRole] = useState<LabAuthRole>('auto');
+  // For Main Website: SuperAdmin, Admin (labowner) — Default to lab owner for immediate vendor access
+  const [mainRole, setMainRole] = useState<MainAuthRole>('vendor_owner');
+
+  // Login form fields
+  const [selectedLabId, setSelectedLabId] = useState<string>(() => selectedVendorLabId || 'lab-apex');
+  const [selectedBranchId, setSelectedBranchId] = useState<string>('branch-1');
+  const [emailOrPhone, setEmailOrPhone] = useState('');
+  const [password, setPassword] = useState('');
+  const [pinCode, setPinCode] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loginError, setLoginError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // -------------------------------------------------------------
+  // CREATE LABORATORY FORM STATES (Per exact user specifications):
+  // Details:
+  //   Lab Name*
+  //   State*
+  // Package Selection:
+  //   1 Month | 3 Months | 1 Year (Auto-filled on package click)
+  // Owner & Login:
+  //   Mobile Number* — 10 digits
+  //   Password* — 5 characters + 5 numbers
+  //   6-Digit PIN*
+  // Actions:
+  //   [ Create Lab ]
+  //   [ 📲 Share Credentials on WhatsApp ]
+  // -------------------------------------------------------------
+  const [createLabName, setCreateLabName] = useState('');
+  const [createState, setCreateState] = useState('Punjab');
+  const [createPackage, setCreatePackage] = useState<string>('Free Demo Plan');
+  const [createMobile, setCreateMobile] = useState('');
+  const [createPassword, setCreatePassword] = useState('');
+  const [createPin, setCreatePin] = useState('');
+  const [showCreatePassword, setShowCreatePassword] = useState(false);
+  const [createError, setCreateError] = useState('');
+  const [copiedSummary, setCopiedSummary] = useState(false);
+
+  // Created Lab Success State
+  const [createdLabData, setCreatedLabData] = useState<{
+    labName: string;
+    state: string;
+    phone: string;
+    password: string;
+    pin: string;
+    labId: string;
+    domainUrl: string;
+    subscriptionPlan?: string;
+  } | null>(null);
+
+  // Auto-fill Package Selection field when selectedRegistrationPackage changes or modal opens
+  useEffect(() => {
+    if (selectedRegistrationPackage) {
+      const lower = selectedRegistrationPackage.toLowerCase();
+      if (lower.includes('demo') || lower.includes('free')) {
+        setCreatePackage('Free Demo Plan');
+      } else if (lower.includes('1 month') || lower.includes('starter') || lower.includes('monthly')) {
+        setCreatePackage('1 Month');
+      } else if (lower.includes('year') || lower.includes('annual') || lower.includes('12')) {
+        setCreatePackage('1 Year');
+      } else if (lower.includes('3 month') || lower.includes('quarterly')) {
+        setCreatePackage('3 Months');
+      } else {
+        setCreatePackage(selectedRegistrationPackage);
+      }
+    }
+  }, [selectedRegistrationPackage, isOpen]);
+
+  // Vendor context strictly locks the modal to that laboratory's portal login
+  // (No Superadmin login, No Create Laboratory option inside vendor's lab)
+  const effectiveIsVendor = Boolean(isVendorContext);
+
+  // Always ensure login tab is active
+  useEffect(() => {
+    setActiveTab('login');
+    if (!effectiveIsVendor) {
+      if (targetLoginRole === 'admin') {
+        setMainRole('super_admin');
+      } else if (targetLoginRole === 'vendor') {
+        setMainRole('vendor_owner');
+      }
+    }
+  }, [isOpen, effectiveIsVendor, targetLoginRole]);
+
+  useEffect(() => {
+    if (effectiveIsVendor) {
+      if (targetLoginRole === 'reception') setLabRole('reception');
+      else if (targetLoginRole === 'technician') setLabRole('technician');
+      else if (targetLoginRole === 'expert') setLabRole('expert');
+      else if (targetLoginRole === 'vendor') setLabRole('vendor');
+      else setLabRole('auto');
+
+      setLoginError('');
+      const defaultLab = selectedVendorLabId || (vendorLabsList && vendorLabsList.length > 0 ? vendorLabsList[0].id : 'lab-apex');
+      setSelectedLabId(defaultLab);
+      setSelectedBranchId('branch-1');
+    } else {
+      if (targetLoginRole === 'admin') setMainRole('super_admin');
+      else if (targetLoginRole === 'vendor') setMainRole('vendor_owner');
+      else setMainRole('super_admin');
+
+      setLoginError('');
+    }
+  }, [targetLoginRole, effectiveIsVendor, isOpen, selectedVendorLabId, vendorLabsList]);
+
+  // Real-time detection of user department / role based on entered username / mobile
+  const detectedRole: 'vendor' | 'reception' | 'technician' | 'expert' | null = React.useMemo(() => {
+    const clean = emailOrPhone.trim().toLowerCase();
+    const cleanDigs = clean.replace(/\D/g, '');
+    const last10 = cleanDigs.length >= 10 ? cleanDigs.slice(-10) : cleanDigs;
+
+    if (!clean && cleanDigs.length < 3) return null;
+
+    // Check staff accounts in system
+    const staffMatch = allStaffAccounts?.find((s) => {
+      const sDigits = (s.phone || '').replace(/\D/g, '');
+      const sLast10 = sDigits.length >= 10 ? sDigits.slice(-10) : sDigits;
+      if (clean.length >= 3 && (s.username.toLowerCase().includes(clean) || clean.includes(s.username.toLowerCase()))) return true;
+      if (s.email && s.email.toLowerCase().trim() === clean) return true;
+      if (s.id.toLowerCase() === clean) return true;
+      if (cleanDigs.length >= 7 && (sLast10 === last10 || sDigits.endsWith(cleanDigs))) return true;
+      return false;
+    });
+
+    if (staffMatch) {
+      if (staffMatch.role === 'reception') return 'reception';
+      if (staffMatch.role === 'technician') return 'technician';
+      if (staffMatch.role === 'expert') return 'expert';
+      if (staffMatch.role === 'admin' || staffMatch.role === 'vendor') return 'vendor';
+    }
+
+    // Role keywords
+    if (clean.includes('reception') || clean.includes('bill') || clean.includes('counter') || clean.includes('pooja') || clean.includes('jasleen') || clean.includes('divya')) {
+      return 'reception';
+    }
+    if (clean.includes('tech') || clean.includes('analyzer') || clean.includes('dmlt') || clean.includes('amit') || clean.includes('satnam')) {
+      return 'technician';
+    }
+    if (clean.includes('expert') || clean.includes('dual') || clean.includes('rajinder') || clean.includes('supervisor')) {
+      return 'expert';
+    }
+    if (clean.includes('admin') || clean.includes('owner') || clean.includes('director') || clean.includes('dr. rajesh') || clean.includes('apex') || clean.includes('citycare')) {
+      return 'vendor';
+    }
+
+    // Check vendor labs directory
+    const labMatch = vendorLabsList?.find((l) => {
+      const lDigits = (l.phone || '').replace(/\D/g, '');
+      const lLast10 = lDigits.length >= 10 ? lDigits.slice(-10) : lDigits;
+      if (cleanDigs.length >= 7 && (lLast10 === last10 || lDigits.endsWith(cleanDigs))) return true;
+      if (l.email && l.email.toLowerCase() === clean) return true;
+      if (l.id.toLowerCase() === clean) return true;
+      return false;
+    });
+    if (labMatch) return 'vendor';
+
+    return null;
+  }, [emailOrPhone, allStaffAccounts, vendorLabsList]);
+
+  if (!isOpen) return null;
+
+  // Current Lab Item for vendor context
+  const currentLabItem = vendorLabsList.find((l) => l.id === selectedLabId) || vendorLabsList[0];
+  const activeLabDisplayName = currentLabItem?.name || vendorLabSettings?.labName || 'Apex Diagnostic & Clinical Pathology';
+
+  // Password validation: 5 characters (letters) + 5 numbers
+  const lettersCount = (createPassword.match(/[a-zA-Z]/g) || []).length;
+  const numbersCount = (createPassword.match(/[0-9]/g) || []).length;
+  const isPasswordValid = lettersCount === 5 && numbersCount === 5 && createPassword.length === 10;
+
+  // Helper: Generate compliant password (5 letters + 5 numbers)
+  const handleGeneratePassword = () => {
+    const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const nums = '23456789';
+    let lettersPart = '';
+    for (let i = 0; i < 5; i++) {
+      lettersPart += letters.charAt(Math.floor(Math.random() * letters.length));
+    }
+    let numsPart = '';
+    for (let i = 0; i < 5; i++) {
+      numsPart += nums.charAt(Math.floor(Math.random() * nums.length));
+    }
+    setCreatePassword(`${lettersPart}${numsPart}`);
+  };
+
+  // Helper: Generate 6-Digit PIN
+  const handleGeneratePin = () => {
+    const pin = String(Math.floor(100000 + Math.random() * 900000));
+    setCreatePin(pin);
+  };
+
+  // WhatsApp Share Credentials Helper
+  const handleShareWhatsApp = (params?: {
+    labName?: string;
+    state?: string;
+    phone?: string;
+    password?: string;
+    pin?: string;
+    labId?: string;
+    subscriptionPlan?: string;
+  }) => {
+    const lab = params?.labName || createLabName.trim();
+    const st = params?.state || createState;
+    const ph = (params?.phone || createMobile).replace(/\D/g, '').slice(-10);
+    const pass = params?.password || createPassword.trim();
+    const pCode = params?.pin || createPin.trim();
+    const pkg = params?.subscriptionPlan || createPackage || '3 Months';
+
+    if (!lab) {
+      setCreateError('Please enter the Lab Name first to share credentials.');
+      return;
+    }
+    if (!ph || ph.length < 10) {
+      setCreateError('Please enter a valid 10-digit Mobile Number to share credentials.');
+      return;
+    }
+
+    const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://indianlalaji.com';
+    const cleanPhone = (ph || '').replace(/\D/g, '').slice(-10);
+    const mobileSlug = cleanPhone || '7087033009';
+    const labUrl = `${currentOrigin}/shop/${mobileSlug}`;
+    const mainLoginUrl = `${currentOrigin}?view=vendor_dashboard`;
+
+    const message = `🏥 *LABORATORY CREDENTIALS*
+━━━━━━━━━━━━━━━━━━━━━━
+*Lab Name:* ${lab}
+*State:* ${st}
+*Selected Package:* ${pkg}
+*Status:* ⏳ Draft (Pending Super Admin Approval)
+
+🔐 *OWNER LOGIN DETAILS:*
+• *Mobile Number / ID:* ${ph}
+• *Password:* ${pass || '(Set in form)'}
+• *6-Digit PIN:* ${pCode || '(Set in form)'}
+• *Role:* Admin (labowner)
+
+🌐 *DEDICATED LAB WEBSITE:*
+${labUrl}
+*(Note: Website pehle Draft mode me rahegi. Super Admin ke approval ke baad live publish hogi.)*
+
+🚀 *ADMIN DASHBOARD LOGIN:*
+${mainLoginUrl}
+
+👥 *DEFAULT STAFF LOGINS:*
+• Receptionist: reception.${mobileSlug} (Pass: ${pass ? pass + '1' : 'reception123'})
+• Technician: tech.${mobileSlug} (Pass: ${pass ? pass + '2' : 'tech123'})
+
+━━━━━━━━━━━━━━━━━━━━━━
+_Powered by indianlalaji.com - India's Premier Pathology Lab Software_`;
+
+    const whatsappUrl = `https://api.whatsapp.com/send?phone=91${ph}&text=${encodeURIComponent(message)}`;
+    window.open(whatsappUrl, '_blank');
+  };
+
+  // Handle Lab Creation Submission
+  const handleCreateLabSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setCreateError('');
+
+    if (!createLabName.trim()) {
+      setCreateError('Please enter the Laboratory Name.');
+      return;
+    }
+    if (!createState.trim()) {
+      setCreateError('Please select the State.');
+      return;
+    }
+
+    const cleanPhone = createMobile.replace(/\D/g, '').slice(-10);
+    if (cleanPhone.length < 10) {
+      setCreateError('Mobile Number must be exactly 10 digits.');
+      return;
+    }
+
+    // Check duplicate phone
+    const existing = vendorLabsList.find(
+      (l) => (l.phone || '').replace(/\D/g, '').slice(-10) === cleanPhone
+    );
+    if (existing) {
+      setCreateError(
+        `This mobile number (+91 ${cleanPhone}) is already registered with "${existing.name}". Ek number se ek hi lab register ho sakti hai.`
+      );
+      return;
+    }
+
+    if (!createPassword.trim()) {
+      setCreateError('Please enter Password (5 characters + 5 numbers).');
+      return;
+    }
+
+    if (lettersCount !== 5 || numbersCount !== 5 || createPassword.length !== 10) {
+      setCreateError('Password must contain exactly 5 characters/letters + 5 numbers (e.g. LABAD12345). Click "⚡ Generate" for instant compliant password.');
+      return;
+    }
+
+    if (!createPin.trim() || createPin.length !== 6 || !/^\d{6}$/.test(createPin)) {
+      setCreateError('Please enter an exact 6-Digit numeric PIN (e.g. 123456).');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const { lab } = registerNewLab({
+        labName: createLabName.trim(),
+        state: createState,
+        phone: cleanPhone,
+        password: createPassword.trim(),
+        pin: createPin.trim(),
+        ownerName: `${createLabName.trim()} Admin`,
+        city: createState,
+        subscriptionPlan: createPackage,
+      });
+
+      const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://indianlalaji.com';
+      const domainUrl = `${currentOrigin}/shop/${cleanPhone}`;
+
+      setCreatedLabData({
+        labName: lab.name,
+        state: lab.state || createState,
+        phone: cleanPhone,
+        password: createPassword.trim(),
+        pin: createPin.trim(),
+        labId: lab.id,
+        domainUrl,
+        subscriptionPlan: createPackage,
+      });
+
+      setIsSubmitting(false);
+    } catch (err: any) {
+      setIsSubmitting(false);
+      setCreateError(err?.message || 'Failed to create laboratory. Please verify inputs.');
+    }
+  };
+
+  // Handle Lab Website Login (Lab Admin, Receptionist, Technician)
+  const handleLabWebsiteLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+
+    if (!emailOrPhone.trim()) {
+      setLoginError(
+        labRole === 'vendor'
+          ? 'Please enter registered 10-digit Mobile Number or Email.'
+          : 'Please enter Staff ID, Username or Mobile.'
+      );
+      return;
+    }
+    if (!password.trim()) {
+      setLoginError('Please enter account password.');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    setTimeout(() => {
+      const cleanInput = emailOrPhone.trim().toLowerCase();
+      const cleanDigits = cleanInput.replace(/\D/g, '');
+      const last10 = cleanDigits.length >= 10 ? cleanDigits.slice(-10) : cleanDigits;
+
+      // Auto-detect Super Admin credentials entered in Lab login modal
+      const isSuperAdminEmail =
+        cleanInput === 'rkmehra331996@gmail.com' ||
+        cleanInput === 'rkmehra331996' ||
+        cleanInput === 'pageguru1@gmail.com' ||
+        cleanInput === 'therkmehra331996@gmail.com' ||
+        cleanInput === 'superadmin@indianlalaji.com' ||
+        cleanInput === 'superadmin' ||
+        cleanInput === 'super_admin' ||
+        cleanInput === 'super-admin' ||
+        cleanInput === 'super admin' ||
+        cleanInput === 'therkmehra331996' ||
+        cleanInput === 'superadmin@gmail.com' ||
+        cleanInput === 'root';
+
+      if (isSuperAdminEmail) {
+        const result = login(
+          'admin',
+          emailOrPhone.trim(),
+          password.trim(),
+          'all',
+          selectedBranchId,
+          pinCode.trim()
+        );
+        setIsSubmitting(false);
+        if (result.success) {
+          onClose();
+          onNavigateView('admin_dashboard');
+          return;
+        } else {
+          setLoginError(result.error || 'Super Admin authentication failed. Check password.');
+          return;
+        }
+      }
+
+      const targetRole = labRole; // 'vendor' | 'reception' | 'technician'
+
+      // Auto-resolve laboratory if owner or staff credentials belong to a different registered lab
+      const matchedLab = vendorLabsList.find((l) => {
+        const lDigits = (l.phone || '').replace(/\D/g, '');
+        const lLast10 = lDigits.length >= 10 ? lDigits.slice(-10) : lDigits;
+        if (cleanDigits.length >= 7 && (lLast10 === last10 || lDigits.endsWith(cleanDigits) || cleanDigits.endsWith(lDigits))) {
+          return true;
+        }
+        if (l.email && l.email.toLowerCase().trim() === cleanInput) return true;
+        if (l.id.toLowerCase() === cleanInput || l.id.toLowerCase().replace('lab-', '') === cleanInput.replace('lab-', '')) return true;
+        if (l.domainPreview && l.domainPreview.toLowerCase().split('.')[0] === cleanInput) return true;
+        if (l.name.toLowerCase().includes(cleanInput) || cleanInput.includes(l.name.toLowerCase())) return true;
+        return false;
+      });
+      const targetLab = matchedLab ? matchedLab.id : (selectedLabId || selectedVendorLabId || 'lab-apex');
+
+      const result = login(
+        targetRole,
+        emailOrPhone.trim(),
+        password.trim(),
+        targetLab,
+        selectedBranchId,
+        pinCode.trim()
+      );
+
+      setIsSubmitting(false);
+
+      if (result.success) {
+        onClose();
+        onNavigateView(result.targetView);
+      } else {
+        setLoginError(result.error || 'Authentication failed. Please check credentials.');
+      }
+    }, 150);
+  };
+
+  // Handle Main Website Login (SuperAdmin, Admin labowner)
+  const handleMainWebsiteLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+
+    if (!emailOrPhone.trim()) {
+      setLoginError(
+        mainRole === 'super_admin'
+          ? 'Please enter Super Admin Master Email ID.'
+          : 'Please enter registered 10-digit Mobile Number or Email.'
+      );
+      return;
+    }
+    if (!password.trim()) {
+      setLoginError('Please enter password.');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    setTimeout(() => {
+      const cleanInput = emailOrPhone.trim().toLowerCase();
+      const cleanDigits = cleanInput.replace(/\D/g, '');
+      const last10 = cleanDigits.length >= 10 ? cleanDigits.slice(-10) : cleanDigits;
+
+      const isSuperAdminEmail =
+        cleanInput === 'rkmehra331996@gmail.com' ||
+        cleanInput === 'rkmehra331996' ||
+        cleanInput === 'pageguru1@gmail.com' ||
+        cleanInput === 'therkmehra331996@gmail.com' ||
+        cleanInput === 'superadmin@indianlalaji.com' ||
+        cleanInput === 'superadmin' ||
+        cleanInput === 'super_admin' ||
+        cleanInput === 'super-admin' ||
+        cleanInput === 'super admin' ||
+        cleanInput === 'therkmehra331996' ||
+        cleanInput === 'superadmin@gmail.com' ||
+        cleanInput === 'root';
+
+      // If user selected SuperAdmin role card, or entered Super Admin master identifier, strictly use 'admin'
+      let targetRole: 'admin' | 'vendor' = mainRole === 'super_admin' ? 'admin' : 'vendor';
+      if (mainRole === 'super_admin' || isSuperAdminEmail) {
+        targetRole = 'admin';
+      } else if (cleanDigits.length >= 7 || !cleanInput.includes('@')) {
+        targetRole = 'vendor';
+      }
+      
+      // Auto-resolve laboratory based on owner credentials
+      const matchedLab = vendorLabsList.find((l) => {
+        const lDigits = (l.phone || '').replace(/\D/g, '');
+        const lLast10 = lDigits.length >= 10 ? lDigits.slice(-10) : lDigits;
+        if (cleanDigits.length >= 7 && (lLast10 === last10 || lDigits.endsWith(cleanDigits) || cleanDigits.endsWith(lDigits))) {
+          return true;
+        }
+        if (l.email && l.email.toLowerCase().trim() === cleanInput) return true;
+        if (l.id.toLowerCase() === cleanInput || l.id.toLowerCase().replace('lab-', '') === cleanInput.replace('lab-', '')) return true;
+        if (l.domainPreview && l.domainPreview.toLowerCase().split('.')[0] === cleanInput) return true;
+        if (l.name.toLowerCase().includes(cleanInput) || cleanInput.includes(l.name.toLowerCase())) return true;
+        return false;
+      });
+
+      const targetLab = targetRole === 'admin' ? 'all' : (matchedLab ? matchedLab.id : selectedLabId || selectedVendorLabId || 'lab-apex');
+
+      const result = login(
+        targetRole,
+        emailOrPhone.trim(),
+        password.trim(),
+        targetLab,
+        selectedBranchId,
+        pinCode.trim()
+      );
+
+      setIsSubmitting(false);
+
+      if (result.success) {
+        onClose();
+        onNavigateView(result.targetView);
+      } else {
+        setLoginError(result.error || 'Authentication failed. Please check credentials.');
+      }
+    }, 150);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-xs animate-in fade-in duration-200">
+      <div className="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[94vh]">
+        {/* Modal Header */}
+        <div className="bg-[#123B6D] text-white px-5 sm:px-6 py-3.5 sm:py-4 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-400 text-slate-950 flex items-center justify-center font-black text-sm shadow-md shrink-0">
+              {effectiveIsVendor ? (
+                <Building className="w-5 h-5 text-slate-950" />
+              ) : (
+                <Crown className="w-5 h-5 text-slate-950" />
+              )}
+            </div>
+            <div>
+              <h3 className="font-black text-base sm:text-lg tracking-tight leading-tight text-white flex items-center gap-2">
+                {effectiveIsVendor ? (
+                  <>
+                    <span>Lab Portal Login</span>
+                    <span className="text-[11px] bg-white/20 px-2 py-0.5 rounded-full font-bold">
+                      {activeLabDisplayName.slice(0, 20)}...
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span>INDIANLALAJI.COM</span>
+                    <span className="text-[11px] bg-teal-500/40 text-emerald-200 px-2 py-0.5 rounded-full font-bold">
+                      Central Login
+                    </span>
+                  </>
+                )}
+              </h3>
+              <p className="text-[11px] text-slate-300">
+                {effectiveIsVendor
+                  ? 'Role-based access: Lab Admin • Receptionist • Technician'
+                  : 'Main Platform: SuperAdmin (Full Access) & Admin Lab Owner (Assigned)'}
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={onClose}
+            className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition cursor-pointer"
+            aria-label="Close modal"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Modal Scrollable Body */}
+        <div className="p-4 sm:p-6 overflow-y-auto">
+          {/* ========================================================================= */}
+          {/* SECTION 1: LAB WEBSITE LOGIN (isVendorContext === true)                     */}
+          {/* Architecture:                                                              */}
+          {/*   LAB WEBSITE                                                             */}
+          {/*        │                                                                   */}
+          {/*      Login                                                                */}
+          {/*        │                                                                   */}
+          {/*   ┌────┴────────────┐                                                     */}
+          {/*   │                 │                                                     */}
+          {/* Lab Admin       Receptionist                                                */}
+          {/*   │                 │                                                     */}
+          {/*   │             Technician                                                */}
+          {/*   │                                                                       */}
+          {/*   ▼                                                                       */}
+          {/* Role-based Dashboard                                                       */}
+          {/* ========================================================================= */}
+          {effectiveIsVendor && (
+            <div className="space-y-4">
+
+
+              {/* Login Form */}
+              <form
+                onSubmit={handleLabWebsiteLogin}
+                className="space-y-3.5 pt-1"
+                autoComplete="off"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                data-bwignore="true"
+                data-dashlane-ignore="true"
+                data-form-type="other"
+              >
+                {/* 1. Username / Mobile input */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    {labRole === 'auto'
+                      ? 'Username / 10-Digit Mobile Number / Staff ID *'
+                      : labRole === 'vendor'
+                      ? 'Lab Owner Mobile Number (10 Digits) or Email *'
+                      : labRole === 'reception'
+                      ? 'Receptionist Staff ID / Mobile / Username *'
+                      : labRole === 'technician'
+                      ? 'Technician Staff ID / Mobile / Username *'
+                      : 'Expert Member ID / Mobile / Username *'}
+                  </label>
+                  <div className="relative">
+                    <User className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      name="lab_user_identity"
+                      required
+                      autoComplete="new-password"
+                      data-lpignore="true"
+                      data-1p-ignore="true"
+                      data-bwignore="true"
+                      data-dashlane-ignore="true"
+                      data-form-type="other"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      value={emailOrPhone}
+                      onChange={(e) => setEmailOrPhone(e.target.value)}
+                      placeholder={
+                        labRole === 'auto'
+                          ? 'e.g. 9876543210, reception@apexlab.com, tech.apex, expert'
+                          : labRole === 'vendor'
+                          ? 'e.g. 7087033009 or owner mobile/email'
+                          : labRole === 'reception'
+                          ? 'e.g. reception.apex or staff mobile'
+                          : labRole === 'technician'
+                          ? 'e.g. tech.apex or staff mobile'
+                          : 'e.g. expert@apexlab.com or 9815099988'
+                      }
+                      className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-[#123B6D]/30 focus:outline-none placeholder:text-slate-400 font-medium"
+                    />
+                  </div>
+                </div>
+
+                {/* 2. Password input */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Password *
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      name="lab_secure_key"
+                      required
+                      autoComplete="new-password"
+                      data-lpignore="true"
+                      data-1p-ignore="true"
+                      data-bwignore="true"
+                      data-dashlane-ignore="true"
+                      data-form-type="other"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder={
+                        labRole === 'expert'
+                          ? 'Enter password (Default: expert123)'
+                          : labRole === 'reception'
+                          ? 'Enter password (Default: reception123)'
+                          : labRole === 'technician'
+                          ? 'Enter password (Default: tech123)'
+                          : 'Enter your password'
+                      }
+                      className="w-full pl-9 pr-10 py-2.5 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-[#123B6D]/30 focus:outline-none placeholder:text-slate-400 font-medium"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* 6-Digit PIN (Optional) */}
+                {(labRole === 'vendor' || labRole === 'expert' || labRole === 'auto') && (
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1 flex items-center justify-between">
+                      <span className="flex items-center gap-1">
+                        <Hash className="w-3 h-3 text-[#123B6D]" />
+                        <span>6-Digit Security PIN</span>
+                      </span>
+                      <span className="text-[10px] text-slate-400">Optional</span>
+                    </label>
+                    <input
+                      type="password"
+                      name="lab_security_pin"
+                      maxLength={6}
+                      autoComplete="new-password"
+                      data-lpignore="true"
+                      data-1p-ignore="true"
+                      data-bwignore="true"
+                      data-dashlane-ignore="true"
+                      data-form-type="other"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      value={pinCode}
+                      onChange={(e) => setPinCode(e.target.value.replace(/\D/g, ''))}
+                      placeholder={labRole === 'expert' ? 'Enter 6-digit PIN (Default: 998877)' : 'Enter 6-digit security PIN'}
+                      className="w-full px-3 py-2.5 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-[#123B6D]/30 focus:outline-none font-mono tracking-widest placeholder:text-slate-400"
+                    />
+                  </div>
+                )}
+
+                {loginError && (
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                    <span>{loginError}</span>
+                  </div>
+                )}
+
+                {/* Submit Action */}
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full bg-[#123B6D] hover:bg-[#0e2c52] disabled:opacity-50 text-white py-3 rounded-xl text-xs font-black transition shadow-xs flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+                >
+                  <span>
+                    {isSubmitting
+                      ? 'Verifying Credentials...'
+                      : detectedRole
+                      ? `Sign In to ${
+                          detectedRole === 'vendor'
+                            ? 'Lab Admin'
+                            : detectedRole === 'reception'
+                            ? 'Reception'
+                            : detectedRole === 'technician'
+                            ? 'Technician'
+                            : 'Expert Member'
+                        } Dashboard`
+                      : labRole === 'auto'
+                      ? 'Verify Credentials & Open Dashboard'
+                      : `Sign In to ${
+                          labRole === 'vendor'
+                            ? 'Lab Admin'
+                            : labRole === 'reception'
+                            ? 'Reception'
+                            : labRole === 'technician'
+                            ? 'Technician'
+                            : 'Expert Member'
+                        } Dashboard`}
+                  </span>
+                  <ArrowRight className="w-4 h-4 text-amber-400" />
+                </button>
+
+
+              </form>
+            </div>
+          )}
+
+          {/* ========================================================================= */}
+          {/* SECTION 2: MAIN INDIAN LALAJI WEBSITE LOGIN                              */}
+          {/* Architecture:                                                              */}
+          {/*   Main indian lalaji website                                              */}
+          {/*            │                                                               */}
+          {/*         LOGIN                                                              */}
+          {/*           │                                                               */}
+          {/*      ┌────┴────┐                                                          */}
+          {/*      │         │                                                          */}
+          {/*   SuperAdmin  Admin(labowner)                                             */}
+          {/*      │         │                                                          */}
+          {/*      ▼         ▼                                                          */}
+          {/*    Full      Assigned                                                     */}
+          {/*    Access    Permissions                                                  */}
+          {/* ========================================================================= */}
+          {!effectiveIsVendor && activeTab === 'login' && (
+            <div className="space-y-4">
+              {/* Architecture Diagram Visualization */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-extrabold text-[#123B6D] flex items-center gap-1.5">
+                    <Crown className="w-3.5 h-3.5 text-amber-500" />
+                    <span>MAIN INDIAN LALAJI WEBSITE (indianlalaji.com)</span>
+                  </span>
+                  <span className="text-[10px] bg-slate-200 text-slate-800 font-mono px-2 py-0.5 rounded font-bold">
+                    LOGIN PORTAL
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-[11px] text-slate-600 font-mono">
+                  <span>Main Portal</span>
+                  <span>➔</span>
+                  <span className="font-bold text-slate-800">LOGIN</span>
+                  <span>➔</span>
+                  <span className="text-rose-700 font-bold">
+                    {mainRole === 'super_admin' ? 'SuperAdmin (Full Access)' : 'Admin(labowner) (Assigned)'}
+                  </span>
+                </div>
+              </div>
+
+              {/* 2 Role Selection Cards: SuperAdmin vs Admin(labowner) */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-2">
+                  Select Administrative Role:
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Card 1: SuperAdmin (Full Access) */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMainRole('super_admin');
+                      setLoginError('');
+                      setEmailOrPhone('');
+                      setPassword('');
+                      setPinCode('');
+                    }}
+                    className={`p-3.5 rounded-xl border text-left transition flex flex-col gap-1.5 cursor-pointer ${
+                      mainRole === 'super_admin'
+                        ? 'border-rose-500 bg-rose-50/70 shadow-xs ring-1 ring-rose-500'
+                        : 'border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="w-8 h-8 rounded-lg bg-rose-100 text-rose-800 flex items-center justify-center">
+                        <Crown className="w-4 h-4 text-rose-700" />
+                      </div>
+                      <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-rose-200 text-rose-900">
+                        Full Access
+                      </span>
+                    </div>
+                    <div>
+                      <div className="font-black text-xs text-slate-900">SuperAdmin</div>
+                      <div className="text-[10px] text-rose-700 font-bold">Master Platform Admin</div>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-snug">
+                      Global access to all diagnostic laboratories, Hostinger MySQL DB, licensing & master directory.
+                    </p>
+                  </button>
+
+                  {/* Card 2: Admin(labowner) (Assigned Permissions) */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMainRole('vendor_owner');
+                      setLoginError('');
+                      setEmailOrPhone('');
+                      setPassword('');
+                      setPinCode('');
+                    }}
+                    className={`p-3.5 rounded-xl border text-left transition flex flex-col gap-1.5 cursor-pointer ${
+                      mainRole === 'vendor_owner'
+                        ? 'border-amber-500 bg-amber-50/70 shadow-xs ring-1 ring-amber-500'
+                        : 'border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-900 flex items-center justify-center">
+                        <Building className="w-4 h-4 text-amber-700" />
+                      </div>
+                      <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-amber-200 text-amber-900">
+                        Assigned Permissions
+                      </span>
+                    </div>
+                    <div>
+                      <div className="font-black text-xs text-slate-900">Admin (labowner)</div>
+                      <div className="text-[10px] text-amber-700 font-bold">Laboratory Center Owner</div>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-snug">
+                      Assigned access to your specific laboratory: test master, staff credentials, accounts & reports.
+                    </p>
+                  </button>
+                </div>
+              </div>
+
+              {/* Login Form for SuperAdmin / Admin (labowner) */}
+              <form
+                onSubmit={handleMainWebsiteLogin}
+                className="space-y-3.5 pt-1"
+                autoComplete="off"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                data-bwignore="true"
+                data-dashlane-ignore="true"
+                data-form-type="other"
+              >
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    {mainRole === 'super_admin'
+                      ? 'Super Admin Master Email ID *'
+                      : 'Registered Lab Owner Mobile Number (10 Digits) or Email *'}
+                  </label>
+                  <div className="relative">
+                    <User className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      name="sa_user_identity"
+                      required
+                      autoComplete="new-password"
+                      data-lpignore="true"
+                      data-1p-ignore="true"
+                      data-bwignore="true"
+                      data-dashlane-ignore="true"
+                      data-form-type="other"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      value={emailOrPhone}
+                      onChange={(e) => setEmailOrPhone(e.target.value)}
+                      placeholder={
+                        mainRole === 'super_admin'
+                          ? 'Super admin email address'
+                          : '10-digit mobile number or owner email'
+                      }
+                      className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-[#123B6D]/30 focus:outline-none placeholder:text-slate-400 font-medium"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Password *
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      name="sa_secure_key"
+                      required
+                      autoComplete="new-password"
+                      data-lpignore="true"
+                      data-1p-ignore="true"
+                      data-bwignore="true"
+                      data-dashlane-ignore="true"
+                      data-form-type="other"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder={mainRole === 'super_admin' ? 'Enter Super Admin password' : 'Enter password'}
+                      className="w-full pl-9 pr-10 py-2.5 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-[#123B6D]/30 focus:outline-none placeholder:text-slate-400"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1 flex items-center justify-between">
+                    <span className="flex items-center gap-1">
+                      <Hash className="w-3 h-3 text-[#123B6D]" />
+                      <span>6-Digit Security PIN</span>
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      Optional
+                    </span>
+                  </label>
+                  <input
+                    type="password"
+                    name="sa_security_pin"
+                    maxLength={6}
+                    autoComplete="new-password"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    data-bwignore="true"
+                    data-dashlane-ignore="true"
+                    data-form-type="other"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                    value={pinCode}
+                    onChange={(e) => setPinCode(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Enter 6-digit security PIN"
+                    className="w-full px-3 py-2.5 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-[#123B6D]/30 focus:outline-none font-mono tracking-widest placeholder:text-slate-400"
+                  />
+                </div>
+
+                {loginError && (
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                    <span>{loginError}</span>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full bg-[#123B6D] hover:bg-[#0e2c52] disabled:opacity-50 text-white py-3 rounded-xl text-xs font-black transition shadow-xs flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+                >
+                  <span>
+                    {isSubmitting
+                      ? 'Verifying Credentials...'
+                      : mainRole === 'super_admin'
+                      ? 'Sign In as SuperAdmin (Full Access)'
+                      : 'Sign In as Admin (labowner)'}
+                  </span>
+                  <ArrowRight className="w-4 h-4 text-amber-400" />
+                </button>
+              </form>
+            </div>
+          )}
+
+          {/* ========================================================================= */}
+          {/* SECTION 3: CREATE LABORATORY                                             */}
+          {/* Exact User Specification:                                                 */}
+          {/*                                                                           */}
+          {/*   Create Laboratory                                                       */}
+          {/*   Details                                                                 */}
+          {/*   Lab Name*                                                               */}
+          {/*   State*                                                                  */}
+          {/*                                                                           */}
+          {/*   Owner & Login                                                           */}
+          {/*   Mobile Number* — 10 digits                                              */}
+          {/*                                                                           */}
+          {/*   Password* — 5 characters + 5 numbers                                    */}
+          {/*                                                                           */}
+          {/*   6-Digit PIN*                                                            */}
+          {/*                                                                           */}
+          {/*   Action                                                                  */}
+          {/*   [ Create Lab ]                                                          */}
+          {/*   [ 📲 Share Credentials on WhatsApp ]                                    */}
+          {/* ========================================================================= */}
+          {!effectiveIsVendor && activeTab === 'register' && (
+            <div>
+              {/* If newly created, show dedicated confirmation card */}
+              {createdLabData ? (
+                <div className="space-y-4 animate-in fade-in">
+                    <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                      <CheckCircle2 className="w-6 h-6" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="font-black text-emerald-950 text-base">
+                          Laboratory Created Successfully! (लैब सफलतापूर्वक बन गई)
+                        </h4>
+                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 border border-amber-500 flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-slate-950" />
+                          <span>Status: Draft (ड्राफ्ट मोड)</span>
+                        </span>
+                      </div>
+                      <p className="text-xs text-emerald-800 mt-1">
+                        Your laboratory has been registered and placed in <strong>Draft Status (ड्राफ्ट मोड)</strong>. It will be officially published and live after Super Admin approval.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Draft Workflow Notification Banner */}
+                  <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl flex items-start gap-3 text-xs text-amber-950">
+                    <div className="w-7 h-7 rounded-lg bg-amber-200 text-amber-900 flex items-center justify-center shrink-0 mt-0.5">
+                      <FileText className="w-4 h-4 text-amber-900" />
+                    </div>
+                    <div className="space-y-0.5 flex-1">
+                      <div className="font-extrabold text-amber-950 text-xs flex items-center gap-1.5">
+                        <span>Workflow: Pehle Draft → Uske Baad Admin Approval → Phir Website Publish</span>
+                      </div>
+                      <p className="text-[11px] text-amber-900 leading-relaxed">
+                        Nayi banayi gayi lab abhi <strong>Draft Mode</strong> me hai. Super Admin ke approve aur publish karne ke baad website live hogi aur patients ke liye booking open hogi.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Summary Credentials Card */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                      <span className="font-extrabold text-xs text-slate-800 uppercase tracking-wider">
+                        Laboratory Summary & Credentials
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const text = `Lab: ${createdLabData.labName}\nStatus: Draft (Pending Admin Approval)\nState: ${createdLabData.state}\nMobile: ${createdLabData.phone}\nPassword: ${createdLabData.password}\nPIN: ${createdLabData.pin}\nWebsite: ${createdLabData.domainUrl}`;
+                          navigator.clipboard?.writeText(text);
+                          setCopiedSummary(true);
+                          setTimeout(() => setCopiedSummary(false), 2000);
+                        }}
+                        className="text-[11px] text-[#123B6D] font-bold flex items-center gap-1 hover:underline cursor-pointer"
+                      >
+                        {copiedSummary ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedSummary ? 'Copied!' : 'Copy Summary'}</span>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                      <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                        <span className="text-[10px] font-bold text-slate-400 block uppercase">Lab Name</span>
+                        <strong className="text-[#123B6D] text-sm">{createdLabData.labName}</strong>
+                      </div>
+                      <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                        <span className="text-[10px] font-bold text-slate-400 block uppercase">Lifecycle Status</span>
+                        <strong className="text-amber-800 text-sm flex items-center gap-1 font-black">
+                          <Clock className="w-3.5 h-3.5 text-amber-600" />
+                          <span>Draft (Pending Admin Approval)</span>
+                        </strong>
+                      </div>
+                      <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                        <span className="text-[10px] font-bold text-slate-400 block uppercase">Mobile Number (Login ID)</span>
+                        <strong className="text-slate-900 font-mono text-sm">+91 {createdLabData.phone}</strong>
+                      </div>
+                      <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                        <span className="text-[10px] font-bold text-slate-400 block uppercase">Password (5 Chars + 5 Nums)</span>
+                        <strong className="text-purple-700 font-mono text-sm">{createdLabData.password}</strong>
+                      </div>
+                      <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                        <span className="text-[10px] font-bold text-slate-400 block uppercase">6-Digit PIN</span>
+                        <strong className="text-indigo-700 font-mono text-sm">{createdLabData.pin}</strong>
+                      </div>
+                      <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                        <span className="text-[10px] font-bold text-slate-400 block uppercase">Assigned Role</span>
+                        <strong className="text-emerald-700 text-sm">Admin (labowner)</strong>
+                      </div>
+                      <div className="p-2.5 bg-white rounded-xl border border-slate-200 sm:col-span-2">
+                        <span className="text-[10px] font-bold text-slate-400 block uppercase">Package Selection</span>
+                        <strong className="text-[#123B6D] text-sm flex items-center gap-1.5">
+                          <span>{createdLabData.subscriptionPlan || '3 Months'}</span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-[#123B6D] border border-blue-200">
+                            100% Features Active
+                          </span>
+                        </strong>
+                      </div>
+                    </div>
+
+                    {/* Dedicated Lab Website Link & Draft Notice */}
+                    <div className="p-3 bg-amber-50/70 border border-amber-300 rounded-xl flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 mb-0.5">
+                          <span className="text-[10px] font-bold text-amber-950 uppercase block">Dedicated Lab Website</span>
+                          <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-amber-200 text-amber-900">
+                            Draft Mode
+                          </span>
+                        </div>
+                        <span className="text-xs text-[#123B6D] font-bold truncate block">{createdLabData.domainUrl}</span>
+                        <span className="text-[10px] text-amber-900/80 block mt-0.5">
+                          Website draft locked. Admin approval ke baad live publish hoga.
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onClose();
+                          selectVendorLab(createdLabData.labId);
+                          try {
+                            window.history.pushState({}, '', `/shop/${createdLabData.phone || createdLabData.labId.replace(/^lab-/, '')}`);
+                          } catch {}
+                          onNavigateView('vendor_website');
+                        }}
+                        className="px-3 py-1.5 bg-[#123B6D] hover:bg-[#0e2c52] text-white text-xs font-bold rounded-lg shrink-0 flex items-center gap-1 cursor-pointer"
+                        title="Preview Draft Website Notice Screen"
+                      >
+                        <Globe className="w-3.5 h-3.5 text-amber-300" />
+                        <span>Preview Draft</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Actions for Created Lab */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                    {/* Primary Action 1: Share on WhatsApp */}
+                    <button
+                      type="button"
+                      onClick={() => handleShareWhatsApp(createdLabData)}
+                      className="w-full bg-[#25D366] hover:bg-[#20be5b] text-white py-3 px-4 rounded-xl text-xs font-black shadow-md flex items-center justify-center gap-2 cursor-pointer transition active:scale-98"
+                    >
+                      <MessageSquare className="w-4 h-4 fill-white" />
+                      <span>📲 Share Credentials on WhatsApp</span>
+                    </button>
+
+                    {/* Primary Action 2: Login to Admin Dashboard */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        selectVendorLab(createdLabData.labId);
+                        onNavigateView('vendor_dashboard');
+                      }}
+                      className="w-full bg-[#123B6D] hover:bg-[#0e2c52] text-white py-3 px-4 rounded-xl text-xs font-black shadow-md flex items-center justify-center gap-2 cursor-pointer transition active:scale-98"
+                    >
+                      <span>🚀 Open Lab Admin Dashboard</span>
+                      <ArrowRight className="w-4 h-4 text-amber-400" />
+                    </button>
+                  </div>
+
+                  <div className="text-center pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCreatedLabData(null);
+                        setCreateLabName('');
+                        setCreateMobile('');
+                        setCreatePassword('');
+                        setCreatePin('');
+                        setCreatePackage(selectedRegistrationPackage || 'Free Demo Plan');
+                      }}
+                      className="text-xs text-slate-500 hover:text-slate-800 font-bold hover:underline cursor-pointer"
+                    >
+                      + Create Another Laboratory (दूसरी लैब बनाएं)
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* Registration Form */
+                <form onSubmit={handleCreateLabSubmit} className="space-y-4">
+                  {/* GROUP 1: Details */}
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
+                    <div className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                      <Building2 className="w-4 h-4 text-[#123B6D]" />
+                      <span>Details</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      {/* Lab Name* */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                          Lab Name <span className="text-rose-600">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={createLabName}
+                          onChange={(e) => setCreateLabName(e.target.value)}
+                          placeholder="e.g. Apex Diagnostic & Clinical Pathology Laboratory"
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-[#123B6D]/30 focus:outline-none font-semibold text-slate-900 placeholder:text-slate-400"
+                        />
+                      </div>
+
+                      {/* State* */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                          State <span className="text-rose-600">*</span>
+                        </label>
+                        <select
+                          required
+                          value={createState}
+                          onChange={(e) => setCreateState(e.target.value)}
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-[#123B6D]/30 focus:outline-none font-bold text-slate-800"
+                        >
+                          {INDIAN_STATES.map((st) => (
+                            <option key={st} value={st}>
+                              {st}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* GROUP 2: Package Selection (4 package options: Free Demo Plan, 1 Month, 3 Months, 1 Year) */}
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                        <Sparkles className="w-4 h-4 text-amber-500" />
+                        <span>Package Selection <span className="text-rose-600">*</span></span>
+                      </div>
+                      <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-200">
+                        100% Features Included
+                      </span>
+                    </div>
+
+                    {/* 4 Interactive Package Option Cards (Radio Button Tabs) */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                      {REGISTRATION_PACKAGES.map((pkg) => {
+                        const isSelected = createPackage === pkg.name;
+                        const isFree = pkg.priceINR === 0;
+                        return (
+                          <button
+                            key={pkg.id}
+                            type="button"
+                            onClick={() => {
+                              setCreatePackage(pkg.name);
+                              setSelectedRegistrationPackage(pkg.name);
+                            }}
+                            className={`p-3 rounded-xl border text-left transition-all relative cursor-pointer ${
+                              isSelected
+                                ? isFree
+                                  ? 'border-emerald-600 bg-emerald-50/40 ring-2 ring-emerald-500/20 shadow-xs'
+                                  : 'border-[#123B6D] bg-blue-50/30 ring-2 ring-[#123B6D]/20 shadow-xs'
+                                : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-1 mb-1">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <div
+                                  className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${
+                                    isSelected
+                                      ? isFree
+                                        ? 'border-emerald-600 bg-emerald-600'
+                                        : 'border-[#123B6D] bg-[#123B6D]'
+                                      : 'border-slate-300'
+                                  }`}
+                                >
+                                  {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                </div>
+                                <span className="font-extrabold text-xs text-slate-900 truncate">{pkg.name}</span>
+                              </div>
+                            </div>
+                            <div
+                              className={`text-base font-black ${
+                                isFree ? 'text-emerald-700' : 'text-[#123B6D]'
+                              } mt-1 flex items-baseline gap-1`}
+                            >
+                              <span>₹{pkg.priceINR.toLocaleString('en-IN')}</span>
+                              <span className="text-[10px] text-slate-500 font-bold">/ {pkg.duration}</span>
+                            </div>
+                            {pkg.badge && (
+                              <div className="mt-1">
+                                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border ${pkg.badgeColor} inline-block`}>
+                                  {pkg.badge}
+                                </span>
+                              </div>
+                            )}
+                            <p className="text-[10px] text-slate-500 mt-1 leading-tight">
+                              {pkg.description}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* GROUP 3: Owner & Login */}
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
+                    <div className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                      <User className="w-4 h-4 text-[#123B6D]" />
+                      <span>Owner & Login</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      {/* Mobile Number* — 10 digits */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1 flex items-center justify-between">
+                          <span>
+                            Mobile Number <span className="text-rose-600">*</span> — 10 digits
+                          </span>
+                          <span
+                            className={`text-[10px] font-bold ${
+                              createMobile.replace(/\D/g, '').length === 10
+                                ? 'text-emerald-600'
+                                : 'text-slate-400'
+                            }`}
+                          >
+                            {createMobile.replace(/\D/g, '').length}/10 Digits
+                          </span>
+                        </label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-500 font-mono">
+                            +91
+                          </span>
+                          <input
+                            type="tel"
+                            required
+                            maxLength={10}
+                            value={createMobile}
+                            onChange={(e) => setCreateMobile(e.target.value.replace(/\D/g, ''))}
+                            placeholder="Enter 10-digit mobile number"
+                            className="w-full pl-12 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-[#123B6D]/30 focus:outline-none font-mono font-bold text-slate-900 placeholder:text-slate-400"
+                          />
+                        </div>
+                        {/* Live Lab URL Preview based on Mobile Number */}
+                        <div className="mt-2 p-2.5 bg-blue-50/80 rounded-xl border border-blue-200/80 flex items-center justify-between text-[11px]">
+                          <span className="text-slate-600 font-semibold flex items-center gap-1.5">
+                            <Globe className="w-3.5 h-3.5 text-[#123B6D]" />
+                            <span>Your Dedicated Lab Shop URL:</span>
+                          </span>
+                          <span className="font-mono font-bold text-[#123B6D] text-xs">
+                            indianlalaji.com/shop/{createMobile.replace(/\D/g, '') || '98XXXXXXXX'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Password* — 5 characters + 5 numbers */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                            <span>Password <span className="text-rose-600">*</span> — 5 characters + 5 numbers</span>
+                          </label>
+                        </div>
+
+                        <div className="relative">
+                          <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                          <input
+                            type={showCreatePassword ? 'text' : 'password'}
+                            required
+                            maxLength={10}
+                            value={createPassword}
+                            onChange={(e) => setCreatePassword(e.target.value)}
+                            placeholder="e.g. LABAD12345"
+                            className="w-full pl-9 pr-10 py-2.5 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-[#123B6D]/30 focus:outline-none font-mono tracking-wider text-slate-900 placeholder:text-slate-400"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowCreatePassword(!showCreatePassword)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                          >
+                            {showCreatePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+
+                        {/* Live Validation Badges */}
+                        <div className="flex items-center gap-2 mt-1.5 text-[10px] font-bold">
+                          <span
+                            className={`px-1.5 py-0.5 rounded flex items-center gap-1 ${
+                              lettersCount === 5
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-slate-100 text-slate-500'
+                            }`}
+                          >
+                            {lettersCount === 5 ? '✓' : '•'} 5 Characters ({lettersCount}/5)
+                          </span>
+                          <span
+                            className={`px-1.5 py-0.5 rounded flex items-center gap-1 ${
+                              numbersCount === 5
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-slate-100 text-slate-500'
+                            }`}
+                          >
+                            {numbersCount === 5 ? '✓' : '•'} 5 Numbers ({numbersCount}/5)
+                          </span>
+                          <span
+                            className={`px-1.5 py-0.5 rounded ${
+                              isPasswordValid
+                                ? 'bg-emerald-200 text-emerald-900 font-extrabold'
+                                : 'bg-slate-100 text-slate-500'
+                            }`}
+                          >
+                            Total: 10 Chars
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* 6-Digit PIN* */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                            <Hash className="w-3 h-3 text-[#123B6D]" />
+                            <span>6-Digit PIN <span className="text-rose-600">*</span></span>
+                          </label>
+                        </div>
+
+                        <input
+                          type="password"
+                          maxLength={6}
+                          required
+                          value={createPin}
+                          onChange={(e) => setCreatePin(e.target.value.replace(/\D/g, ''))}
+                          placeholder="6 numeric digits (e.g. 123456)"
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-[#123B6D]/30 focus:outline-none font-mono tracking-widest text-slate-900 placeholder:text-slate-400"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {createError && (
+                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                      <span>{createError}</span>
+                    </div>
+                  )}
+
+                  {/* GROUP 3: Action Buttons */}
+                  <div className="pt-1">
+                    <div className="text-xs font-black text-slate-800 uppercase tracking-wider mb-2">
+                      Action
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {/* Action Button 1: [ Create Lab ] */}
+                      <button
+                        type="submit"
+                        disabled={isSubmitting}
+                        className="bg-[#123B6D] hover:bg-[#0e2c52] disabled:opacity-50 text-white py-3 px-4 rounded-xl text-xs font-black transition shadow-sm hover:shadow-md flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+                      >
+                        <Building2 className="w-4 h-4 text-amber-300" />
+                        <span>{isSubmitting ? 'Creating Lab in Draft...' : '[ Create Lab (Draft) ]'}</span>
+                      </button>
+
+                      {/* Action Button 2: [ 📲 Share Credentials on WhatsApp ] */}
+                      <button
+                        type="button"
+                        onClick={() => handleShareWhatsApp()}
+                        className="bg-[#25D366] hover:bg-[#20be5b] text-white py-3 px-4 rounded-xl text-xs font-black transition shadow-sm hover:shadow-md flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+                        title="Send formatted credentials directly to owner on WhatsApp"
+                      >
+                        <MessageSquare className="w-4 h-4 fill-white" />
+                        <span>[ 📲 Share Credentials on WhatsApp ]</span>
+                      </button>
+                    </div>
+                    <div className="text-[10px] text-slate-500 text-center mt-2 font-medium">
+                      Workflow: Create Lab ➔ Saves to Draft ➔ Admin Approval ➔ Live Publish
+                    </div>
+                  </div>
+                </form>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};

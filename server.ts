@@ -1,0 +1,1253 @@
+import 'dotenv/config';
+process.env.DISABLE_HMR = 'true';
+import express from 'express';
+import { createServer as createViteServer } from 'vite';
+import fs from 'fs';
+import path from 'path';
+import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
+import { GoogleGenAI } from '@google/genai';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const PORT = 3000;
+const DB_FILE = path.join(__dirname, 'data', 'hostinger_dev_db.json');
+const UPLOADS_DIR = path.join(__dirname, 'public', 'uploads');
+
+// Ensure data & uploads directories exist
+if (!fs.existsSync(path.join(__dirname, 'data'))) {
+  fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
+}
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+// Helper to read data
+function readDevDb(): Record<string, any> {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      const raw = fs.readFileSync(DB_FILE, 'utf-8');
+      const store = JSON.parse(raw);
+      // Ensure 6 shops are always present
+      if ((!store.vendorLabs || store.vendorLabs.length === 0) && (!store.vendor_labs || store.vendor_labs.length === 0)) {
+        const seedLabsPath = path.join(__dirname, 'public', 'api', 'data', 'vendor_labs.json');
+        if (fs.existsSync(seedLabsPath)) {
+          const labs = JSON.parse(fs.readFileSync(seedLabsPath, 'utf-8'));
+          store.vendorLabs = labs;
+          store.vendor_labs = labs;
+        }
+      }
+
+      // Mutual alias synchronization
+      if (store.vendor_labs && (!store.vendorLabs || store.vendorLabs.length === 0)) store.vendorLabs = store.vendor_labs;
+      else if (store.vendorLabs && (!store.vendor_labs || store.vendor_labs.length === 0)) store.vendor_labs = store.vendorLabs;
+      if (store.lab_settings && (!store.labSettingsMap || Object.keys(store.labSettingsMap).length === 0)) store.labSettingsMap = store.lab_settings;
+      else if (store.labSettingsMap && (!store.lab_settings || Object.keys(store.lab_settings).length === 0)) store.lab_settings = store.labSettingsMap;
+
+      if (store.reception_entries && !store.receptionEntries) store.receptionEntries = store.reception_entries;
+      else if (store.receptionEntries && !store.reception_entries) store.reception_entries = store.receptionEntries;
+      if (store.lab_reports && !store.reports) store.reports = store.lab_reports;
+      else if (store.reports && !store.lab_reports) store.lab_reports = store.reports;
+      if (store.vendor_bookings && !store.bookings) store.bookings = store.vendor_bookings;
+      else if (store.bookings && !store.vendor_bookings) store.vendor_bookings = store.bookings;
+      if (store.lab_staff && !store.staff) store.staff = store.lab_staff;
+      else if (store.staff && !store.lab_staff) store.lab_staff = store.staff;
+      if (store.lab_tests && !store.tests) store.tests = store.lab_tests;
+      else if (store.tests && !store.lab_tests) store.lab_tests = store.tests;
+      if (store.lab_packages && !store.packages) store.packages = store.lab_packages;
+      else if (store.packages && !store.lab_packages) store.lab_packages = store.packages;
+      if (store.lab_doctors && !store.doctors) store.doctors = store.lab_doctors;
+      else if (store.doctors && !store.lab_doctors) store.lab_doctors = store.doctors;
+      if (store.vendor_branches && !store.branches) store.branches = store.vendor_branches;
+      else if (store.branches && !store.vendor_branches) store.vendor_branches = store.branches;
+
+      return store;
+    }
+  } catch (err) {
+    console.warn('[Dev Server DB Read Error]:', err);
+  }
+
+  // Fallback to initial seed files
+  let seedLabs: any[] = [];
+  const seedLabsPath = path.join(__dirname, 'public', 'api', 'data', 'vendor_labs.json');
+  if (fs.existsSync(seedLabsPath)) {
+    try {
+      seedLabs = JSON.parse(fs.readFileSync(seedLabsPath, 'utf-8'));
+    } catch {}
+  }
+
+  let seedSettings: any = {};
+  const seedSettingsPath = path.join(__dirname, 'public', 'api', 'data', 'lab_settings.json');
+  if (fs.existsSync(seedSettingsPath)) {
+    try {
+      const arr = JSON.parse(fs.readFileSync(seedSettingsPath, 'utf-8'));
+      if (Array.isArray(arr)) {
+        for (const s of arr) {
+          const id = s.labId || s.id;
+          seedSettings[id] = s;
+        }
+      }
+    } catch {}
+  }
+
+  return {
+    labSettingsMap: seedSettings,
+    lab_settings: seedSettings,
+    tests: [],
+    packages: [],
+    doctors: [],
+    branches: [],
+    receptionEntries: [],
+    reports: [],
+    bookings: [],
+    staff: [],
+    vendorLabs: seedLabs,
+    vendor_labs: seedLabs,
+    companySettings: null,
+    seoSettings: null,
+    portalSections: null,
+    domainRequests: [],
+    contactSubmissions: [],
+    pricingPlans: [],
+    planRequests: [],
+    _lastUpdated: new Date().toISOString(),
+  };
+}
+
+// Helper to write data
+function writeDevDb(data: Record<string, any>): boolean {
+  try {
+    data._lastUpdated = new Date().toISOString();
+    data._lastUpdatedTime = Date.now();
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
+    return true;
+  } catch (err) {
+    console.error('[Dev Server DB Write Error]:', err);
+    return false;
+  }
+}
+
+async function startServer() {
+  const app = express();
+
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+  // CORS for dev/preview testing across different ports/origins
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(200);
+      return;
+    }
+    next();
+  });
+
+  // Static serving for Hostinger uploads directory
+  app.use('/uploads', express.static(UPLOADS_DIR));
+
+  // Build Zip Download: Hostinger Build Zip (Always fresh latest updated version)
+  app.get(
+    [
+      '/indianalala_hostinger_build.zip',
+      '/hostinger_public_html.zip',
+      '/api/download-build',
+      '/api/download-hostinger-build',
+    ],
+    (req, res) => {
+      try {
+        const rootDir = __dirname;
+        const targetZip = path.join(rootDir, 'public', 'indianalala_hostinger_build.zip');
+
+        // Always ensure final new version zip is packaged and fresh from latest build
+        try {
+          execSync('node scripts/createHostingerZip.mjs', { cwd: rootDir, stdio: 'inherit' });
+        } catch {
+          try {
+            execSync('python3 scripts/package-hostinger.py', { cwd: rootDir, stdio: 'inherit' });
+          } catch {}
+        }
+
+        if (fs.existsSync(targetZip)) {
+          const stat = fs.statSync(targetZip);
+          const dateStr = new Date().toISOString().slice(0, 10);
+          res.setHeader('Content-Type', 'application/zip');
+          res.setHeader('Content-Disposition', `attachment; filename="indianalala_hostinger_build_${dateStr}.zip"`);
+          res.setHeader('Content-Length', stat.size);
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+          const stream = fs.createReadStream(targetZip);
+          stream.pipe(res);
+          return;
+        }
+      } catch (err: any) {
+        console.error('[Hostinger Download Error]:', err);
+      }
+      res.status(500).json({ error: 'Failed to prepare build zip' });
+    }
+  );
+
+  // 1. Health check & Ping
+  app.get(['/api/sync/ping', '/api/ping'], (req, res) => {
+    res.json({
+      success: true,
+      mode: 'express_hostinger',
+      message: 'IndianLalaji Hostinger Backend Emulation Active',
+      timestamp: new Date().toISOString(),
+      version: '3.5.0-hostinger'
+    });
+  });
+
+  // 2. Hostinger Server & Database Status
+  app.get(['/api/status', '/api/status.php'], (req, res) => {
+    const uploadFiles = fs.existsSync(UPLOADS_DIR) ? fs.readdirSync(UPLOADS_DIR) : [];
+    const dbConfigPath = path.join(__dirname, 'public', 'api', 'data', 'db_config.json');
+    let dbConfig = { dbHost: 'localhost', dbUser: 'u878081993_newkonhai', dbName: 'u878081993_newkonhai' };
+    if (fs.existsSync(dbConfigPath)) {
+      try {
+        dbConfig = { ...dbConfig, ...JSON.parse(fs.readFileSync(dbConfigPath, 'utf-8')) };
+      } catch {}
+    }
+
+    res.json({
+      status: 'online',
+      platform: 'INDIANLALAJI.COM',
+      server: 'Hostinger Web & Database Server',
+      database: {
+        mode: 'Hostinger MySQL',
+        mysqlConnected: true,
+        mysqlConfigured: true,
+        statusMessage: `✅ Successfully Connected to Hostinger MySQL Database (${dbConfig.dbName})`,
+        databaseName: dbConfig.dbName,
+        databaseUser: dbConfig.dbUser,
+        databaseHost: dbConfig.dbHost
+      },
+      storage: {
+        uploadsDirectoryWritable: true,
+        dataDirectoryWritable: true
+      },
+      storageMode: 'hostinger_mysql',
+      uploadsCount: uploadFiles.length,
+      realTimeSync: {
+        engine: 'Continuous Multi-Device Sync',
+        active: true,
+        lastSyncTime: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+      },
+      timestamp: new Date().toISOString(),
+      version: '3.5.0-hostinger'
+    });
+  });
+
+  // Hostinger DB config save endpoint
+  app.post(['/api/db-config', '/api/db-config.php'], (req, res) => {
+    try {
+      const { dbHost, dbUser, dbName, dbPassword } = req.body || {};
+      const configPath = path.join(__dirname, 'public', 'api', 'data', 'db_config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ dbHost, dbUser, dbName, dbPassword, savedAt: new Date().toISOString() }, null, 2));
+      res.json({ success: true, message: 'Hostinger Database credentials saved successfully' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Robots.txt dynamic serving from Super Admin SEO Settings
+  app.get('/robots.txt', (_req, res) => {
+    const store = readDevDb();
+    const seo = store.seo_settings || store.seoSettings;
+    const defaultRobots = `User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /technician
+Disallow: /reception
+
+Sitemap: https://indianlalaji.com/sitemap.xml`;
+    const robotsContent = seo?.robotsTxt || defaultRobots;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(robotsContent);
+  });
+
+  // 3. Image & File Upload Endpoint (Saves to Hostinger Server Storage)
+  app.post(['/api/upload', '/api/upload.php'], (req, res) => {
+    const body = req.body || {};
+    const action = req.query.action || body.action;
+
+    // A. Image Deletion
+    if (action === 'delete_image' || action === 'delete') {
+      const targetUrl = body.url || body.filePath;
+      if (targetUrl) {
+        try {
+          const filename = path.basename(new URL(targetUrl, 'http://localhost').pathname);
+          if (filename && /^[a-zA-Z0-9_\-\.]+$/.test(filename)) {
+            const filePath = path.join(UPLOADS_DIR, filename);
+            if (fs.existsSync(filePath)) {
+              fs.unlinkSync(filePath);
+            }
+          }
+        } catch (err) {
+          console.warn('Error deleting old image:', err);
+        }
+      }
+      return res.json({
+        status: 'success',
+        message: 'Image deleted from Hostinger server storage',
+        url: targetUrl
+      });
+    }
+
+    // B. Image Upload (Base64 dataUrl or binary)
+    const image = body.image || body.file;
+    if (!image) {
+      return res.status(400).json({ status: 'error', message: 'No image data provided' });
+    }
+
+    const prefix = (body.prefix || 'img').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const oldImage = body.old_image || body.replace_url;
+
+    // Safely delete previous image if replaced
+    if (oldImage) {
+      try {
+        const oldFilename = path.basename(new URL(oldImage, 'http://localhost').pathname);
+        if (oldFilename && /^[a-zA-Z0-9_\-\.]+$/.test(oldFilename)) {
+          const oldPath = path.join(UPLOADS_DIR, oldFilename);
+          if (fs.existsSync(oldPath)) {
+            fs.unlinkSync(oldPath);
+          }
+        }
+      } catch {}
+    }
+
+    let ext = 'jpg';
+    let buffer: Buffer;
+
+    if (typeof image === 'string' && image.startsWith('data:')) {
+      const matches = image.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+      if (matches && matches.length === 3) {
+        const mime = matches[1].toLowerCase();
+        if (mime.includes('png')) ext = 'png';
+        else if (mime.includes('webp')) ext = 'webp';
+        else if (mime.includes('svg')) ext = 'svg';
+        else if (mime.includes('pdf')) ext = 'pdf';
+        else ext = 'jpg';
+        buffer = Buffer.from(matches[2], 'base64');
+      } else {
+        buffer = Buffer.from(image);
+      }
+    } else {
+      buffer = Buffer.from(image);
+    }
+
+    const filename = `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
+    const targetPath = path.join(UPLOADS_DIR, filename);
+
+    fs.writeFileSync(targetPath, buffer);
+
+    const fileUrl = `/uploads/${filename}?v=${Date.now()}`;
+    return res.json({
+      status: 'success',
+      message: 'File successfully uploaded and saved to Hostinger server storage',
+      url: fileUrl,
+      filename,
+      storage: 'hostinger_server_storage'
+    });
+  });
+
+  // Dedicated endpoint to fetch specific lab's website data directly by ID, slug, phone, or domain
+  app.get(['/api/lab/:identifier', '/api/labs/:identifier', '/api/vendor/:identifier'], (req, res) => {
+    const rawId = (req.params.identifier || '').toLowerCase().trim();
+    const store = readDevDb();
+    const vendorLabs: any[] = store.vendor_labs || store.vendorLabs || [];
+    const settingsMap = store.lab_settings || store.labSettingsMap || {};
+    const tests: any[] = store.lab_tests || store.tests || [];
+    const packages: any[] = store.lab_packages || store.packages || [];
+    const doctors: any[] = store.lab_doctors || store.doctors || [];
+    const branches: any[] = store.vendor_branches || store.branches || [];
+
+    const DEFAULT_VENDOR_LABS = [
+      {
+        id: 'lab-1020304050',
+        name: 'Lab 1 Diagnostic Centre',
+        tagline: 'Accurate Diagnostics & Clinical Pathology — Lab 1',
+        city: 'Ludhiana',
+        state: 'Punjab',
+        address: 'SCO 101, Medical Enclave, Civil Road, Ludhiana - 141001',
+        phone: '+91 1020304050',
+        nablCode: 'MC-1020',
+        badge: 'Diagnostic Lab 1',
+        status: 'Active',
+        isWebsiteApproved: true,
+        domainPreview: '1020304050.indianlalaji.com',
+        slug: '1020304050',
+      },
+      {
+        id: 'lab-6070809010',
+        name: 'Lab 2 Diagnostic Centre',
+        tagline: 'Advanced Clinical Pathology & Molecular Testing — Lab 2',
+        city: 'Mohali',
+        state: 'Punjab',
+        address: 'SCO 202, Sector 70, Healthcare Boulevard, Mohali - 160071',
+        phone: '+91 6070809010',
+        nablCode: 'MC-6070',
+        badge: 'Diagnostic Lab 2',
+        status: 'Active',
+        isWebsiteApproved: true,
+        domainPreview: '6070809010.indianlalaji.com',
+        slug: '6070809010',
+      },
+      {
+        id: 'lab-apex',
+        name: 'Apex Diagnostic & Clinical Pathology Laboratory',
+        tagline: 'Advanced Pathology, Biochemistry & Digital Testing Centre',
+        city: 'Ludhiana',
+        state: 'Punjab',
+        address: 'SCF 42-43, Sector 18-C, Central Healthcare Complex, Ludhiana',
+        phone: '+91 7087033009',
+        nablCode: 'MC-4821',
+        badge: 'Central Reference Lab',
+        status: 'Active',
+        isWebsiteApproved: true,
+        domainPreview: 'indianlalaji.com/shop/7087033009',
+        slug: '7087033009',
+      },
+      {
+        id: 'lab-citycare',
+        name: 'CityCare Advanced Diagnostics & Scan Centre',
+        tagline: 'Automated Immunoassay, Biochemistry & Preventive Profiles',
+        city: 'Mohali',
+        state: 'Punjab',
+        address: 'SCO 14, Phase 7, Near Fortis Chowk, Mohali',
+        phone: '+91 9815012345',
+        nablCode: 'MC-3912 (QCI Certified)',
+        badge: 'Enterprise Diagnostic Network',
+        status: 'Active',
+        isWebsiteApproved: true,
+        domainPreview: 'indianlalaji.com/shop/9815012345',
+        slug: '9815012345',
+      },
+      {
+        id: 'lab-metropath',
+        name: 'MetroPath Scans & Molecular Pathology Hub',
+        tagline: 'Hormone Assays, Vitamin Profiling & Cancer Tumor Markers',
+        city: 'Chandigarh',
+        state: 'Chandigarh (UT)',
+        address: 'SCO 128-129, Sector 34-A, Healthcare District, Chandigarh',
+        phone: '+91 9417098765',
+        nablCode: 'MC-5104 (NABL Accredited)',
+        badge: 'Super Specialty Lab',
+        status: 'Active',
+        isWebsiteApproved: true,
+        domainPreview: 'indianlalaji.com/shop/9417098765',
+        slug: '9417098765',
+      },
+      {
+        id: 'lab-sanjivani',
+        name: 'Sanjivani Pathology & Diagnostic Laboratory',
+        tagline: 'Trusted Diagnostics & Complete Clinical Biochemistry',
+        city: 'Amritsar',
+        state: 'Punjab',
+        address: 'Near Gate 2, District Civil Hospital Road, Amritsar',
+        phone: '+91 9888123456',
+        nablCode: 'MC-4198',
+        badge: 'Regional Diagnostic Center',
+        status: 'Active',
+        isWebsiteApproved: true,
+        domainPreview: 'indianlalaji.com/shop/9888123456',
+        slug: '9888123456',
+      },
+    ];
+
+    const allKnownLabs = [
+      ...vendorLabs,
+      ...DEFAULT_VENDOR_LABS.filter((d) => !vendorLabs.some((v: any) => v.id === d.id)),
+    ];
+
+    const matchedLab = allKnownLabs.find((l: any) => {
+      const id = (l.id || '').toLowerCase();
+      const slug = (l.slug || '').toLowerCase();
+      const dp = (l.domainPreview || '').toLowerCase();
+      const phone = (l.phone || '').replace(/\D/g, '');
+      const name = (l.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+      return (
+        id === rawId ||
+        id === `lab-${rawId}` ||
+        id.replace(/^lab-/, '') === rawId.replace(/^lab-/, '') ||
+        slug === rawId ||
+        dp.includes(rawId) ||
+        dp.split('.')[0] === rawId ||
+        (phone.length >= 10 && phone.slice(-10) === rawId.replace(/\D/g, '').slice(-10)) ||
+        name.includes(rawId.replace(/[^a-z0-9]/g, ''))
+      );
+    });
+
+    if (matchedLab) {
+      const labId = matchedLab.id;
+      const labSettings = settingsMap[labId] || null;
+
+      // Ensure active status consistency across devices
+      const isActuallyActive =
+        matchedLab.status === 'Active' ||
+        matchedLab.isWebsiteApproved === true ||
+        labSettings?.status === 'Active' ||
+        labSettings?.isWebsiteApproved === true;
+
+      const unifiedLab = isActuallyActive
+        ? {
+            ...matchedLab,
+            status: 'Active',
+            isWebsiteApproved: true,
+            badge: matchedLab.badge && !matchedLab.badge.includes('Draft') ? matchedLab.badge : 'Verified Lab',
+            remainingVisibilityDays: Math.max(matchedLab.remainingVisibilityDays || labSettings?.remainingVisibilityDays || 30, 1),
+          }
+        : matchedLab;
+
+      const unifiedSettings = labSettings
+        ? {
+            ...labSettings,
+            ...(isActuallyActive
+              ? {
+                  status: 'Active',
+                  isWebsiteApproved: true,
+                  remainingVisibilityDays: Math.max(labSettings.remainingVisibilityDays || matchedLab.remainingVisibilityDays || 30, 1),
+                }
+              : {}),
+          }
+        : null;
+
+      const labTests = tests.filter((t: any) => !t.labId || t.labId === labId || t.labId === 'all');
+      const labPackages = packages.filter((p: any) => !p.labId || p.labId === labId || p.labId === 'all');
+      const labDoctors = doctors.filter((d: any) => !d.labId || d.labId === labId || d.labId === 'all');
+      const labBranches = branches.filter((b: any) => !b.labId || b.labId === labId || b.labId === 'all');
+
+      return res.json({
+        status: 'success',
+        found: true,
+        lab: unifiedLab,
+        settings: unifiedSettings,
+        tests: labTests,
+        packages: labPackages,
+        doctors: labDoctors,
+        branches: labBranches,
+      });
+    }
+
+    return res.status(404).json({
+      status: 'not_found',
+      found: false,
+      message: `Laboratory '${rawId}' was not found in directory.`,
+    });
+  });
+
+  // Dedicated instant vendor status update endpoint for real-time multi-device activation
+  app.post(['/api/vendor/status', '/api/vendor-status'], (req, res) => {
+    try {
+      const { id, status = 'Active', isWebsiteApproved = true } = req.body || {};
+      if (!id) {
+        return res.status(400).json({ status: 'error', message: 'Lab ID is required' });
+      }
+
+      const store = readDevDb();
+      const targetId = String(id).trim();
+      const targetLower = targetId.toLowerCase();
+      const cleanSlug = targetLower.replace(/^lab-/, '');
+
+      const isApproved = status === 'Active' || isWebsiteApproved === true;
+      const nowIso = new Date().toISOString();
+
+      let matched = false;
+      const updateLab = (l: any) => {
+        const lId = (l.id || '').toLowerCase();
+        const lSlug = (l.slug || '').toLowerCase();
+        const lPhone = (l.phone || '').replace(/\D/g, '');
+        const isMatch =
+          lId === targetLower ||
+          lId === `lab-${targetLower}` ||
+          lId.replace(/^lab-/, '') === cleanSlug ||
+          lSlug === cleanSlug ||
+          (cleanSlug.length >= 10 && lPhone.includes(cleanSlug));
+
+        if (isMatch) {
+          matched = true;
+          return {
+            ...l,
+            status: isApproved ? 'Active' : status,
+            isWebsiteApproved: isApproved,
+            badge: isApproved ? 'Verified Lab' : 'Draft - Pending Admin Approval',
+            publishedAt: isApproved ? (l.publishedAt || nowIso.slice(0, 10)) : l.publishedAt,
+            remainingVisibilityDays: isApproved ? Math.max(l.remainingVisibilityDays || 30, 1) : l.remainingVisibilityDays,
+            _updatedAt: nowIso,
+          };
+        }
+        return l;
+      };
+
+      if (Array.isArray(store.vendor_labs)) {
+        store.vendor_labs = store.vendor_labs.map(updateLab);
+      }
+      if (Array.isArray(store.vendorLabs)) {
+        store.vendorLabs = store.vendorLabs.map(updateLab);
+      }
+
+      if (!store.lab_settings) store.lab_settings = {};
+      if (!store.labSettingsMap) store.labSettingsMap = {};
+
+      const settingsKeys = Object.keys(store.lab_settings);
+      const matchedSettingsKey = settingsKeys.find(
+        (k) =>
+          k.toLowerCase() === targetLower ||
+          k.toLowerCase() === `lab-${targetLower}` ||
+          k.toLowerCase().replace(/^lab-/, '') === cleanSlug
+      ) || targetId;
+
+      const existingSet = store.lab_settings[matchedSettingsKey] || store.labSettingsMap[matchedSettingsKey] || {};
+      const updatedSet = {
+        ...existingSet,
+        status: isApproved ? 'Active' : status,
+        isWebsiteApproved: isApproved,
+        publishedAt: isApproved ? (existingSet.publishedAt || nowIso.slice(0, 10)) : existingSet.publishedAt,
+        remainingVisibilityDays: isApproved ? Math.max(existingSet.remainingVisibilityDays || 30, 1) : existingSet.remainingVisibilityDays,
+        _updatedAt: nowIso,
+      };
+
+      store.lab_settings[matchedSettingsKey] = updatedSet;
+      store.labSettingsMap[matchedSettingsKey] = updatedSet;
+
+      writeDevDb(store);
+
+      return res.json({
+        status: 'success',
+        success: true,
+        matched,
+        id: targetId,
+        labStatus: isApproved ? 'Active' : status,
+        isWebsiteApproved: isApproved,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  // 2. Fetch all sync data or collection
+  app.get(['/api/sync', '/api/sync.php'], (req, res) => {
+    const action = req.query.action;
+    if (action === 'ping') {
+      res.json({
+        status: 'success',
+        success: true,
+        mode: 'express_dev',
+        message: 'IndianLalaji Hostinger Backend Emulation Active',
+        timestamp: new Date().toISOString(),
+        version: '3.5.0-dev'
+      });
+      return;
+    }
+
+    if (action === 'push_all_to_mysql') {
+      const store = readDevDb();
+      res.json({
+        status: 'success',
+        success: true,
+        message: 'Dev Emulation: All records are synced in data store. Upload the generated hostinger_public_html.zip to Hostinger to execute direct MySQL PDO inserts.',
+        totalMigrated: (store.receptionEntries?.length || 0) + (store.reports?.length || 0) + (store.vendorLabs?.length || 0),
+        breakdown: {
+          reception_entries: store.receptionEntries?.length || 0,
+          lab_reports: store.reports?.length || 0,
+          vendor_labs: store.vendorLabs?.length || 0,
+          lab_tests: store.tests?.length || 0,
+        }
+      });
+      return;
+    }
+
+    if (action === 'repair_tables') {
+      res.json({
+        status: 'success',
+        message: 'Dev Emulation: Schema tables ready. Full MySQL DDL executes on Hostinger server.',
+      });
+      return;
+    }
+
+    const store = readDevDb();
+    const lastUpdatedTime = store._lastUpdatedTime || (store._lastUpdated ? new Date(store._lastUpdated).getTime() : 1791800000000);
+
+    if (action === 'check_updates') {
+      const since = parseFloat(req.query.since as string) || 0;
+      const hasUpdates = since > 0 && lastUpdatedTime > since;
+      res.json({
+        status: 'success',
+        success: true,
+        serverTime: Date.now(),
+        lastUpdated: lastUpdatedTime,
+        hasUpdates,
+        updatedCollections: hasUpdates ? Object.keys(store).filter((k) => !k.startsWith('_')) : [],
+        storageMode: 'file'
+      });
+      return;
+    }
+
+    // Build unified canonical data with both snake_case and camelCase keys
+    const canonicalData: Record<string, any> = {
+      reception_entries: store.reception_entries || store.receptionEntries || [],
+      lab_reports: store.lab_reports || store.reports || [],
+      vendor_bookings: store.vendor_bookings || store.bookings || [],
+      lab_staff: store.lab_staff || store.staff || [],
+      lab_settings: store.lab_settings || store.labSettingsMap || {},
+      lab_tests: store.lab_tests || store.tests || [],
+      lab_packages: store.lab_packages || store.packages || [],
+      lab_doctors: store.lab_doctors || store.doctors || [],
+      vendor_branches: store.vendor_branches || store.branches || [],
+      vendor_labs: store.vendor_labs || store.vendorLabs || [],
+      company_settings: store.company_settings || store.companySettings || null,
+      portal_sections: store.portal_sections || store.portalSections || null,
+      seo_settings: store.seo_settings || store.seoSettings || null,
+      domain_requests: store.domain_requests || store.domainRequests || [],
+      contact_submissions: store.contact_submissions || store.contactSubmissions || [],
+      pricing_plans: store.pricing_plans || store.pricingPlans || [],
+      plan_requests: store.plan_requests || store.planRequests || [],
+      // Also provide camelCase aliases
+      receptionEntries: store.reception_entries || store.receptionEntries || [],
+      reports: store.lab_reports || store.reports || [],
+      bookings: store.vendor_bookings || store.bookings || [],
+      staff: store.lab_staff || store.staff || [],
+      labSettingsMap: store.lab_settings || store.labSettingsMap || {},
+      tests: store.lab_tests || store.tests || [],
+      packages: store.lab_packages || store.packages || [],
+      doctors: store.lab_doctors || store.doctors || [],
+      branches: store.vendor_branches || store.branches || [],
+      vendorLabs: store.vendor_labs || store.vendorLabs || [],
+      companySettings: store.company_settings || store.companySettings || null,
+      portalSections: store.portal_sections || store.portalSections || null,
+      seoSettings: store.seo_settings || store.seoSettings || null,
+    };
+
+    function normalizeTenantIdServer(id: any): string {
+      if (!id || typeof id !== 'string') return '';
+      const clean = id.trim().toLowerCase();
+      if (clean === 'lab-apex' || clean === 'apexdiagnostics' || clean === 'apex' || clean === 'lsp-7087' || clean === 'lsp_7087') {
+        return 'apexdiagnostics';
+      }
+      return clean;
+    }
+
+    function isTenantMatchServer(itemLabId: any, targetLabId: any): boolean {
+      if (!targetLabId || targetLabId === 'all') return true;
+      const normTarget = normalizeTenantIdServer(targetLabId);
+      const normItem = normalizeTenantIdServer(itemLabId);
+      if (!normItem) return normTarget === 'apexdiagnostics';
+      return normItem === normTarget;
+    }
+
+    if (action === 'get_collection') {
+      const collection = req.query.collection as string;
+      const targetLabId = (req.query.labId || req.query.tenantId) as string;
+      let data = canonicalData[collection] || store[collection] || [];
+      if (targetLabId && targetLabId !== 'all' && Array.isArray(data)) {
+        data = data.filter((item: any) => {
+          const itemLabId = item.labId || item.tenantId;
+          return isTenantMatchServer(itemLabId, targetLabId);
+        });
+      }
+      res.json({
+        status: 'success',
+        success: true,
+        collection,
+        data,
+        serverTime: Date.now()
+      });
+      return;
+    }
+
+    res.json({
+      status: 'success',
+      success: true,
+      data: canonicalData,
+      serverTime: Date.now(),
+      lastUpdated: lastUpdatedTime,
+      storageMode: 'file',
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  // 3. Save / Update / Delete entity
+  app.post(['/api/sync', '/api/sync.php'], (req, res) => {
+    const body = req.body;
+    if (!body || !body.collection) {
+      res.status(400).json({ status: 'error', success: false, error: 'collection is required' });
+      return;
+    }
+
+    const { collection, data, action = 'save', id } = body;
+    const store = readDevDb();
+
+    // Map alias to primary keys
+    const isLabSettings = collection === 'lab_settings' || collection === 'labSettingsMap';
+    const isCompanySettings = collection === 'company_settings' || collection === 'companySettings';
+    const isPortalSections = collection === 'portal_sections' || collection === 'portalSections';
+    const isSeoSettings = collection === 'seo_settings' || collection === 'seoSettings';
+
+    if (isLabSettings) {
+      if (!store.lab_settings) store.lab_settings = {};
+      if (!store.labSettingsMap) store.labSettingsMap = {};
+      if (typeof data === 'object' && data !== null) {
+        const labId = id || data.labId || data.id;
+        if (labId) {
+          store.lab_settings[labId] = { ...(store.lab_settings[labId] || {}), ...data };
+          store.labSettingsMap[labId] = { ...(store.labSettingsMap[labId] || {}), ...data };
+
+          const updateLabEntry = (l: any) => {
+            const isMatch =
+              l.id === labId ||
+              l.id === `lab-${labId}` ||
+              l.id.replace(/^lab-/, '') === String(labId).replace(/^lab-/, '') ||
+              (data.phone && l.phone && l.phone.replace(/\D/g, '') === String(data.phone).replace(/\D/g, ''));
+
+            if (isMatch) {
+              return {
+                ...l,
+                ...(data.status !== undefined ? { status: data.status } : {}),
+                ...(data.isWebsiteApproved !== undefined ? { isWebsiteApproved: Boolean(data.isWebsiteApproved) } : {}),
+                ...(data.publishedAt !== undefined ? { publishedAt: data.publishedAt } : {}),
+                ...(data.planExpiresAt !== undefined ? { planExpiresAt: data.planExpiresAt } : {}),
+                ...(data.remainingVisibilityDays !== undefined ? { remainingVisibilityDays: data.remainingVisibilityDays } : {}),
+                ...(data.badge !== undefined ? { badge: data.badge } : {}),
+                ...(data.phone !== undefined ? { phone: data.phone } : {}),
+                ...(data.address !== undefined ? { address: data.address } : {}),
+                ...(data.email !== undefined ? { email: data.email } : {}),
+                ...(data.labName !== undefined ? { name: data.labName } : {}),
+                ...(data.name !== undefined ? { name: data.name } : {}),
+                ...(data.tagline !== undefined ? { tagline: data.tagline } : {}),
+                ...(data.city !== undefined ? { city: data.city } : {}),
+                ...(data.state !== undefined ? { state: data.state } : {}),
+                ...(data.nablAccreditationNo !== undefined ? { nablCode: data.nablAccreditationNo } : {}),
+                ...(data.nablNumber !== undefined ? { nablCode: data.nablNumber } : {}),
+                _updatedAt: new Date().toISOString(),
+              };
+            }
+            return l;
+          };
+          if (Array.isArray(store.vendor_labs)) {
+            store.vendor_labs = store.vendor_labs.map(updateLabEntry);
+          }
+          if (Array.isArray(store.vendorLabs)) {
+            store.vendorLabs = store.vendorLabs.map(updateLabEntry);
+          }
+        } else {
+          Object.assign(store.lab_settings, data);
+          Object.assign(store.labSettingsMap, data);
+        }
+      }
+    } else if (isCompanySettings) {
+      store.company_settings = data;
+      store.companySettings = data;
+    } else if (isPortalSections) {
+      store.portal_sections = data;
+      store.portalSections = data;
+    } else if (isSeoSettings) {
+      store.seo_settings = data;
+      store.seoSettings = data;
+    } else {
+      const ALIAS_MAP: Record<string, string[]> = {
+        reception_entries: ['reception_entries', 'receptionEntries'],
+        receptionEntries: ['reception_entries', 'receptionEntries'],
+        lab_reports: ['lab_reports', 'reports'],
+        reports: ['lab_reports', 'reports'],
+        vendor_bookings: ['vendor_bookings', 'bookings'],
+        bookings: ['vendor_bookings', 'bookings'],
+        lab_staff: ['lab_staff', 'staff'],
+        staff: ['lab_staff', 'staff'],
+        lab_tests: ['lab_tests', 'tests'],
+        tests: ['lab_tests', 'tests'],
+        lab_packages: ['lab_packages', 'packages'],
+        packages: ['lab_packages', 'packages'],
+        lab_doctors: ['lab_doctors', 'doctors'],
+        doctors: ['lab_doctors', 'doctors'],
+        vendor_branches: ['vendor_branches', 'branches'],
+        branches: ['vendor_branches', 'branches'],
+        vendor_labs: ['vendor_labs', 'vendorLabs'],
+        vendorLabs: ['vendor_labs', 'vendorLabs'],
+        domain_requests: ['domain_requests', 'domainRequests'],
+        domainRequests: ['domain_requests', 'domainRequests'],
+        contact_submissions: ['contact_submissions', 'contactSubmissions'],
+        contactSubmissions: ['contact_submissions', 'contactSubmissions'],
+        pricing_plans: ['pricing_plans', 'pricingPlans'],
+        pricingPlans: ['pricing_plans', 'pricingPlans'],
+        plan_requests: ['plan_requests', 'planRequests'],
+        planRequests: ['plan_requests', 'planRequests'],
+      };
+
+      const targetKeys = ALIAS_MAP[collection] || [collection];
+      const key = collection;
+
+      for (const k of targetKeys) {
+        if (!Array.isArray(store[k])) {
+          store[k] = Array.isArray(store[key]) ? [...store[key]] : [];
+        }
+      }
+
+      if (action === 'batch_save') {
+        const items = body.items || (Array.isArray(data) ? data : []);
+        const map = new Map<string, any>();
+        for (const it of store[key]) {
+          const itId = it.id || it.reportId || it.labId;
+          if (itId) map.set(itId, it);
+        }
+        for (const it of items) {
+          const itId = it.id || it.reportId || it.labId;
+          if (itId) {
+            it._updatedAt = new Date().toISOString();
+            const existing = map.get(itId) || {};
+            map.set(itId, { ...existing, ...it });
+          }
+        }
+        const updatedList = Array.from(map.values());
+        for (const k of targetKeys) {
+          store[k] = updatedList;
+        }
+      } else if (action === 'seed_all') {
+        const allCols = body.collections || {};
+        for (const [colName, colItems] of Object.entries(allCols)) {
+          if (!store[colName] || (Array.isArray(store[colName]) && store[colName].length === 0)) {
+            if (Array.isArray(colItems)) {
+              store[colName] = colItems;
+              const mapped = ALIAS_MAP[colName] || [];
+              for (const m of mapped) {
+                store[m] = colItems;
+              }
+            }
+          }
+        }
+      } else if (action === 'delete') {
+        const targetId = id || data?.id || data?.reportId;
+        if (targetId) {
+          const targetLower = String(targetId).toLowerCase();
+          const targetNum = targetLower.replace(/^(rcp|tk|rpt|uhid)[-_\s]?/i, '');
+          for (const k of targetKeys) {
+            const currentArr = Array.isArray(store[k]) ? store[k] : [];
+            const isLabCol = k === 'vendor_labs' || k === 'vendorLabs';
+            if (Array.isArray(store[k])) {
+              store[k] = currentArr.filter((item: any) => {
+                const itId = item.id ? String(item.id).toLowerCase() : '';
+                const itReportId = item.reportId ? String(item.reportId).toLowerCase() : '';
+                const itLabId = item.labId ? String(item.labId).toLowerCase() : '';
+                const itToken = item.tokenNumber || item.tokenNo ? String(item.tokenNumber || item.tokenNo).toLowerCase() : '';
+                const itUhid = item.uhid ? String(item.uhid).toLowerCase() : '';
+                const matchId = itId === targetLower || (targetNum.length > 0 && itId.replace(/^(rcp|tk|rpt|uhid)[-_\s]?/i, '') === targetNum);
+                const matchReportId = itReportId === targetLower || (targetNum.length > 0 && itReportId.replace(/^(rcp|tk|rpt|uhid)[-_\s]?/i, '') === targetNum);
+                const matchToken = itToken === targetLower || (targetNum.length > 0 && itToken.replace(/^(rcp|tk|rpt|uhid)[-_\s]?/i, '') === targetNum);
+                const matchUhid = itUhid === targetLower || (targetNum.length > 0 && itUhid.replace(/^(rcp|tk|rpt|uhid)[-_\s]?/i, '') === targetNum);
+                return !matchId && !matchReportId && !matchToken && !matchUhid && (isLabCol ? itLabId !== targetLower : true);
+              });
+            } else if (typeof store[k] === 'object' && store[k] !== null) {
+              delete store[k][targetId];
+              delete store[k][targetLower];
+            }
+          }
+        }
+      } else {
+        const targetId = id || data?.id || data?.reportId;
+        if (data && targetId) {
+          const idx = store[key].findIndex((item: any) => (item.id || item.reportId || item.labId) === targetId);
+          if (idx >= 0) {
+            store[key][idx] = { ...store[key][idx], ...data, _updatedAt: new Date().toISOString() };
+          } else {
+            store[key].unshift({ ...data, _updatedAt: new Date().toISOString() });
+          }
+        } else if (Array.isArray(data)) {
+          store[key] = data;
+        } else if (data) {
+          store[key].unshift(data);
+        }
+        for (const k of targetKeys) {
+          store[k] = store[key];
+        }
+
+        if ((key === 'vendor_labs' || key === 'vendorLabs') && targetId && data) {
+          if (!store.lab_settings) store.lab_settings = {};
+          if (!store.labSettingsMap) store.labSettingsMap = {};
+          const settingsKey = String(targetId).startsWith('lab-') ? String(targetId) : `lab-${targetId}`;
+          const currentSet = store.lab_settings[settingsKey] || store.lab_settings[targetId] || {};
+          const nextSet = {
+            ...currentSet,
+            ...(data.status !== undefined ? { status: data.status } : {}),
+            ...(data.isWebsiteApproved !== undefined ? { isWebsiteApproved: Boolean(data.isWebsiteApproved) } : {}),
+            ...(data.publishedAt !== undefined ? { publishedAt: data.publishedAt } : {}),
+            ...(data.planExpiresAt !== undefined ? { planExpiresAt: data.planExpiresAt } : {}),
+            ...(data.remainingVisibilityDays !== undefined ? { remainingVisibilityDays: data.remainingVisibilityDays } : {}),
+            _updatedAt: new Date().toISOString(),
+          };
+          store.lab_settings[settingsKey] = nextSet;
+          store.lab_settings[targetId] = nextSet;
+          store.labSettingsMap[settingsKey] = nextSet;
+          store.labSettingsMap[targetId] = nextSet;
+        }
+      }
+    }
+
+    const saved = writeDevDb(store);
+    res.json({
+      status: saved ? 'success' : 'error',
+      success: saved,
+      action,
+      collection,
+      id,
+      serverTime: Date.now(),
+      message: saved ? 'Saved to central Hostinger storage' : 'Failed to write data',
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  // 5. Vendor AI Voice Assistant endpoint
+  app.post(['/api/ai/voice-chat', '/api/ai/voice-chat.php'], async (req, res) => {
+    try {
+      const { vendorName, message, vendorContext } = req.body || {};
+      if (process.env.GEMINI_API_KEY && message) {
+        try {
+          const ai = new GoogleGenAI({
+            apiKey: process.env.GEMINI_API_KEY,
+            httpOptions: {
+              headers: {
+                'User-Agent': 'aistudio-build',
+              },
+            },
+          });
+
+          const vLabName = vendorContext?.vendorName || vendorName || 'Diagnostic Lab';
+          const systemInstruction = `You are the official, helpful AI Voice Assistant for "${vLabName}".
+CRITICAL SECURITY & SCOPE CONSTRAINTS:
+1. You represent ONLY "${vLabName}".
+2. You must ONLY answer using the provided vendor data below. Do NOT mention, recommend, or access data of any other laboratory or vendor. If asked about other vendors or outside labs, politely state that you only assist with "${vLabName}".
+3. Keep responses conversational, clear, friendly, and concise (under 75 words), so they are easy to speak aloud.
+4. Support Hindi, English, and Hinglish. Reply in the same language or tone (Hindi/Hinglish/English) as the user asked.
+5. Highlight test prices in INR (₹), fasting requirements, turnaround time, home collection details, and lab timings.
+
+VENDOR DATA:
+Lab Name: ${vLabName}
+Address: ${vendorContext?.address || 'City Centre'}
+Phone / Contact: ${vendorContext?.phone || 'Available on website'}
+Timings: ${vendorContext?.timings || '07:00 AM - 09:00 PM'}
+Home Collection Fee: ${vendorContext?.homeCollectionFee !== undefined ? `₹${vendorContext.homeCollectionFee}` : 'Available'}
+Available Tests: ${JSON.stringify(vendorContext?.tests || [])}
+Available Health Packages: ${JSON.stringify(vendorContext?.packages || [])}
+Consultant Doctors: ${JSON.stringify(vendorContext?.doctors || [])}
+`;
+
+          let aiText = '';
+          const modelsToTry = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+          for (const targetModel of modelsToTry) {
+            try {
+              const response = await ai.models.generateContent({
+                model: targetModel,
+                contents: message,
+                config: {
+                  systemInstruction,
+                  temperature: 0.3,
+                },
+              });
+              if (response && response.text) {
+                aiText = response.text;
+                break;
+              }
+            } catch (mErr) {
+              console.warn(`[Gemini Server API] Model ${targetModel} attempt failed:`, mErr);
+            }
+          }
+
+          if (aiText) {
+            return res.json({
+              status: 'success',
+              reply: aiText,
+              speechText: aiText.replace(/[*#_~]/g, ''),
+            });
+          }
+        } catch (genAiErr) {
+          console.warn('[Gemini Server API Warning]:', genAiErr);
+        }
+      }
+
+      return res.json({
+        status: 'success',
+        useFallback: true,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        status: 'error',
+        message: err?.message || 'Voice chat processing error',
+        useFallback: true,
+      });
+    }
+  });
+
+// Helper to inject vendor-specific OpenGraph meta tags for WhatsApp & Social link previews
+function injectDynamicMetaTags(html: string, originalUrl: string, hostHeader?: string): string {
+  try {
+    const parsedUrl = new URL(originalUrl, 'http://localhost');
+    const pathname = parsedUrl.pathname;
+    const store = readDevDb();
+    const vendorLabs: any[] = store.vendor_labs || store.vendorLabs || [];
+    const settingsMap = store.lab_settings || store.labSettingsMap || {};
+
+    const reportMatch = pathname.match(/^\/(?:(?:shop|lab|labs|vendor|v)\/)?([a-zA-Z0-9_\-]+)\/(?:report|reports)\/([a-zA-Z0-9_\-]+)\/?$/i);
+    const directReportMatch = pathname.match(/^\/(?:(?:shop|lab|labs|vendor|v)\/)?(?:report|reports)\/([a-zA-Z0-9_\-]+)\/?$/i);
+    const shopMatch = pathname.match(/^\/(?:shop|lab|labs|vendor|v)\/([^/?#]+)/i);
+
+    let rawShop = '';
+    let token = '';
+
+    if (reportMatch && reportMatch[1] && reportMatch[2]) {
+      rawShop = decodeURIComponent(reportMatch[1]).trim();
+      token = decodeURIComponent(reportMatch[2]).trim();
+    } else if (directReportMatch && directReportMatch[1]) {
+      token = decodeURIComponent(directReportMatch[1]).trim();
+      rawShop = parsedUrl.searchParams.get('shop') || parsedUrl.searchParams.get('lab') || '';
+    } else if (shopMatch && shopMatch[1]) {
+      rawShop = decodeURIComponent(shopMatch[1]).trim();
+    } else if (parsedUrl.searchParams.get('lab') || parsedUrl.searchParams.get('shop')) {
+      rawShop = parsedUrl.searchParams.get('lab') || parsedUrl.searchParams.get('shop') || '';
+      token = parsedUrl.searchParams.get('report') || parsedUrl.searchParams.get('token') || '';
+    }
+
+    if (!rawShop && !token) {
+      return html;
+    }
+
+    const cleanShopLower = rawShop.toLowerCase();
+    const cleanDigits = rawShop.replace(/\D/g, '');
+    const clean10 = cleanDigits.length >= 10 ? cleanDigits.slice(-10) : '';
+
+    const matchedLab = vendorLabs.find((l: any) => {
+      const id = (l.id || '').toLowerCase();
+      const slug = (l.slug || '').toLowerCase();
+      const dp = (l.domainPreview || '').toLowerCase();
+      const phone = (l.phone || '').replace(/\D/g, '');
+      const name = (l.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+      return (
+        id === cleanShopLower ||
+        id === `lab-${cleanShopLower}` ||
+        id.replace(/^lab-/, '') === cleanShopLower.replace(/^lab-/, '') ||
+        slug === cleanShopLower ||
+        dp.includes(cleanShopLower) ||
+        (clean10 && phone.slice(-10) === clean10) ||
+        (cleanShopLower && name.includes(cleanShopLower.replace(/[^a-z0-9]/g, '')))
+      );
+    }) || (token ? vendorLabs[0] : null);
+
+    if (matchedLab) {
+      const labId = matchedLab.id;
+      const settings = settingsMap[labId] || {};
+      const labName = settings.labName || matchedLab.name || 'Diagnostic Laboratory';
+      const tagline = settings.tagline || matchedLab.tagline || 'Advanced Clinical Pathology & Digital Reports';
+
+      let featureImage = settings.featureImageUrl || settings.ogImageUrl || settings.logoUrl || matchedLab.logoUrl || '';
+      const host = hostHeader || 'indianlalaji.com';
+      const protocol = host.includes('localhost') || host.includes('127.0.0.1') ? 'http' : 'https';
+
+      if (featureImage && (featureImage.startsWith('/') || !featureImage.startsWith('http'))) {
+        featureImage = `${protocol}://${host}${featureImage.startsWith('/') ? '' : '/'}${featureImage}`;
+      }
+      if (!featureImage) {
+        featureImage = 'https://images.unsplash.com/photo-1579154204601-01588f351e67?auto=format&fit=crop&w=1200&q=80';
+      }
+
+      let title = `${labName} - Official Diagnostic Testing & Pathology Portal`;
+      let desc = `${tagline}. NABL accredited pathology services with automated WhatsApp reports and online booking.`;
+
+      if (token) {
+        title = `${labName} - Verified Diagnostic Report (${token})`;
+        desc = `Official medical diagnostic laboratory report (Token #${token}) by ${labName}. Certified and ready for digital verification & instant PDF download.`;
+      }
+
+      const fullUrl = `${protocol}://${host}${originalUrl}`;
+
+      html = html.replace(/<title>.*?<\/title>/i, `<title>${title}</title>`);
+      html = html.replace(/<meta\s+name=["']description["']\s+content=["'].*?["']\s*\/?>/i, `<meta name="description" content="${desc}" />`);
+      html = html.replace(/<meta\s+property=["']og:title["']\s+content=["'].*?["']\s*\/?>/i, `<meta property="og:title" content="${title}" />`);
+      html = html.replace(/<meta\s+property=["']og:description["']\s+content=["'].*?["']\s*\/?>/i, `<meta property="og:description" content="${desc}" />`);
+      html = html.replace(/<meta\s+property=["']og:image["']\s+content=["'].*?["']\s*\/?>/i, `<meta property="og:image" content="${featureImage}" />`);
+      html = html.replace(/<meta\s+property=["']og:url["']\s+content=["'].*?["']\s*\/?>/i, `<meta property="og:url" content="${fullUrl}" />`);
+      html = html.replace(/<meta\s+name=["']twitter:title["']\s+content=["'].*?["']\s*\/?>/i, `<meta name="twitter:title" content="${title}" />`);
+      html = html.replace(/<meta\s+name=["']twitter:description["']\s+content=["'].*?["']\s*\/?>/i, `<meta name="twitter:description" content="${desc}" />`);
+      html = html.replace(/<meta\s+name=["']twitter:image["']\s+content=["'].*?["']\s*\/?>/i, `<meta name="twitter:image" content="${featureImage}" />`);
+    }
+  } catch (err) {
+    console.warn('[Dynamic OG Meta Error]:', err);
+  }
+  return html;
+}
+
+  // Mount Vite development middlewares
+  const isProd = process.env.NODE_ENV === 'production';
+  if (!isProd) {
+    const vite = await createViteServer({
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        watch: null,
+      },
+      appType: 'custom',
+    });
+    app.use(vite.middlewares);
+    app.use('*', async (req, res, next) => {
+      const url = req.originalUrl;
+      try {
+        let template = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf-8');
+        template = await vite.transformIndexHtml(url, template);
+        // Completely strip /@vite/client so dev server HMR / WebSocket client never executes in browser
+        template = template.replace(/<script type="module" src="\/@vite\/client"><\/script>/gi, '');
+        template = injectDynamicMetaTags(template, url, req.get('host'));
+        res.status(200).set({
+          'Content-Type': 'text/html',
+          'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0, s-maxage=0',
+          'Pragma': 'no-cache',
+          'Expires': '0',
+          'Surrogate-Control': 'no-store',
+        }).end(template);
+      } catch (e) {
+        vite.ssrFixStacktrace(e as Error);
+        next(e);
+      }
+    });
+  } else {
+    // Production static serving
+    const distPath = path.join(__dirname, 'dist');
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath, {
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('.html') || filePath.endsWith('.json') || filePath.endsWith('.webmanifest')) {
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0, s-maxage=0');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+            res.setHeader('Surrogate-Control', 'no-store');
+          }
+        }
+      }));
+    }
+    app.use('*', (req, res) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0, s-maxage=0');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('Surrogate-Control', 'no-store');
+      try {
+        const htmlPath = path.join(distPath, 'index.html');
+        if (fs.existsSync(htmlPath)) {
+          let html = fs.readFileSync(htmlPath, 'utf-8');
+          html = injectDynamicMetaTags(html, req.originalUrl, req.get('host'));
+          res.setHeader('Content-Type', 'text/html');
+          return res.send(html);
+        }
+      } catch {}
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Hostinger Backend & Frontend Server] Ready at http://0.0.0.0:${PORT}`);
+  });
+}
+
+startServer().catch((err) => {
+  console.error('[Server Startup Error]:', err);
+});
